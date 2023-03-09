@@ -17,23 +17,23 @@ limitations under the License.
 package options
 
 import (
-	"flag"
 	"strconv"
 	"time"
 
+	pkgclient "github.com/kubevela/pkg/controller/client"
 	ctrlrec "github.com/kubevela/pkg/controller/reconciler"
+	"github.com/kubevela/pkg/controller/sharding"
 	pkgmulticluster "github.com/kubevela/pkg/multicluster"
+	utillog "github.com/kubevela/pkg/util/log"
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog/v2"
 
 	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
+	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
-
-	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 )
 
 // CoreOptions contains everything necessary to create and run vela-core
@@ -125,7 +125,6 @@ func (s *CoreOptions) Flags() cliflag.NamedFlagSets {
 	gfs.BoolVar(&s.LogDebug, "log-debug", s.LogDebug, "Enable debug logs for development purpose")
 	gfs.StringVar(&s.HealthAddr, "health-addr", s.HealthAddr, "The address the health endpoint binds to.")
 	gfs.StringVar(&s.DisableCaps, "disable-caps", s.DisableCaps, "To be disabled builtin capability list.")
-	gfs.StringVar(&s.StorageDriver, "storage-driver", s.StorageDriver, "Application file save to the storage driver")
 	gfs.DurationVar(&s.InformerSyncPeriod, "informer-sync-period", s.InformerSyncPeriod,
 		"The re-sync period for informer in controller-runtime. This is a system-level configuration.")
 	gfs.Float64Var(&s.QPS, "kube-api-qps", s.QPS, "the qps for reconcile clients. Low qps may lead to low throughput. High qps may give stress to api-server. Raise this value if concurrent-reconciles is set to be high.")
@@ -166,11 +165,10 @@ func (s *CoreOptions) Flags() cliflag.NamedFlagSets {
 	pkgmulticluster.AddFlags(fss.FlagSet("multicluster"))
 	ctrlrec.AddFlags(fss.FlagSet("controllerreconciles"))
 	utilfeature.DefaultMutableFeatureGate.AddFlag(fss.FlagSet("featuregate"))
-
+	sharding.AddFlags(fss.FlagSet("sharding"))
 	kfs := fss.FlagSet("klog")
-	local := flag.NewFlagSet("klog", flag.ExitOnError)
-	klog.InitFlags(local)
-	kfs.AddGoFlagSet(local)
+	pkgclient.AddTimeoutControllerClientFlags(fss.FlagSet("controllerclient"))
+	utillog.AddFlags(kfs)
 
 	if s.LogDebug {
 		_ = kfs.Set("v", strconv.Itoa(int(commonconfig.LogDebug)))

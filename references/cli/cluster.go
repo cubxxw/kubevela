@@ -24,15 +24,22 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/fatih/color"
+	"github.com/kubevela/pkg/util/runtime"
+	"github.com/kubevela/pkg/util/slices"
+	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
+	clustergatewayapi "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
+	"github.com/oam-dev/cluster-gateway/pkg/config"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/kubectl/pkg/util/i18n"
+	"k8s.io/kubectl/pkg/util/templates"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
-	"github.com/oam-dev/cluster-gateway/pkg/config"
-
 	"github.com/oam-dev/kubevela/apis/types"
+	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
@@ -52,10 +59,13 @@ const (
 
 	// CreateNamespace specifies the namespace need to create in managedCluster
 	CreateNamespace = "create-namespace"
+
+	// CreateLabel specifies the labels need to create in managedCluster
+	CreateLabel = "labels"
 )
 
 // ClusterCommandGroup create a group of cluster command
-func ClusterCommandGroup(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func ClusterCommandGroup(f velacmd.Factory, c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cluster",
 		Short: "Manage Kubernetes Clusters",
@@ -85,6 +95,7 @@ func ClusterCommandGroup(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comm
 		NewClusterProbeCommand(&c),
 		NewClusterLabelCommandGroup(&c),
 		NewClusterAliasCommand(&c),
+		NewClusterExportConfigCommand(f, ioStreams),
 	)
 	return cmd
 }
@@ -144,7 +155,8 @@ func NewClusterJoinCommand(c *common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 		Short: "join managed cluster.",
 		Long:  "join managed cluster by kubeconfig.",
 		Example: "# Join cluster declared in my-child-cluster.kubeconfig\n" +
-			"> vela cluster join my-child-cluster.kubeconfig --name example-cluster",
+			"> vela cluster join my-child-cluster.kubeconfig --name example-cluster\n" +
+			"> vela cluster join my-child-cluster.kubeconfig --name example-cluster --labels project=kubevela,owner=oam-dev",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// get ClusterName from flag or config
@@ -160,6 +172,10 @@ func NewClusterJoinCommand(c *common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			createNamespace, err := cmd.Flags().GetString(CreateNamespace)
 			if err != nil {
 				return errors.Wrapf(err, "failed to get create namespace")
+			}
+			labels, err := cmd.Flags().GetString(CreateLabel)
+			if err != nil {
+				return errors.Wrapf(err, "failed to get label")
 			}
 			client, err := c.GetClient()
 			if err != nil {
@@ -190,6 +206,10 @@ func NewClusterJoinCommand(c *common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				return err
 			}
 			cmd.Printf("Successfully add cluster %s, endpoint: %s.\n", clusterName, clusterConfig.Cluster.Server)
+
+			if len(labels) > 0 {
+				return addClusterLabels(cmd, c, clusterName, labels)
+			}
 			return nil
 		},
 	}
@@ -199,6 +219,8 @@ func NewClusterJoinCommand(c *common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 	cmd.Flags().BoolP(FlagInClusterBootstrap, "", true, "If true, the registering managed cluster "+
 		`will use the internal endpoint prescribed in the hub cluster's configmap "kube-public/cluster-info to register "`+
 		"itself to the hub cluster. Otherwise use the original endpoint from the hub kubeconfig.")
+	cmd.Flags().StringP(CreateLabel, "", "", "Specifies the labels need to create in managedCluster")
+
 	return cmd
 }
 
@@ -349,30 +371,36 @@ func NewClusterAddLabelsCommand(c *common.Args) *cobra.Command {
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			clusterName := args[0]
-			addLabels := map[string]string{}
-			for _, kv := range strings.Split(args[1], ",") {
-				parts := strings.Split(kv, "=")
-				if len(parts) != 2 {
-					return errors.Errorf("invalid label key-value pair %s, should use the format LABEL_KEY=LABEL_VAL", kv)
-				}
-				addLabels[parts[0]] = parts[1]
-			}
-			cli, err := c.GetClient()
-			if err != nil {
-				return err
-			}
-			vc, err := multicluster.GetVirtualCluster(context.Background(), cli, clusterName)
-			if err != nil {
-				return errors.Wrapf(err, "failed to get cluster %s", clusterName)
-			}
-			if vc.Object == nil {
-				return errors.Errorf("cluster type %s do not support add labels now", vc.Type)
-			}
-			meta.AddLabels(vc.Object, addLabels)
-			return updateClusterLabelAndPrint(cmd, cli, vc, clusterName)
+			labels := args[1]
+			return addClusterLabels(cmd, c, clusterName, labels)
 		},
 	}
 	return cmd
+}
+
+func addClusterLabels(cmd *cobra.Command, c *common.Args, clusterName, labels string) error {
+	addLabels := map[string]string{}
+	for _, kv := range strings.Split(labels, ",") {
+		parts := strings.Split(kv, "=")
+		if len(parts) != 2 {
+			return errors.Errorf("invalid label key-value pair %s, should use the format LABEL_KEY=LABEL_VAL", kv)
+		}
+		addLabels[parts[0]] = parts[1]
+	}
+
+	cli, err := c.GetClient()
+	if err != nil {
+		return err
+	}
+	vc, err := multicluster.GetVirtualCluster(context.Background(), cli, clusterName)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get cluster %s", clusterName)
+	}
+	if vc.Object == nil {
+		return errors.Errorf("cluster type %s do not support add labels now", vc.Type)
+	}
+	meta.AddLabels(vc.Object, addLabels)
+	return updateClusterLabelAndPrint(cmd, cli, vc, clusterName)
 }
 
 // NewClusterDelLabelsCommand create command to delete labels for managed cluster
@@ -408,4 +436,86 @@ func NewClusterDelLabelsCommand(c *common.Args) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// NewClusterExportConfigCommand create command to export multi-cluster config
+func NewClusterExportConfigCommand(f velacmd.Factory, ioStreams cmdutil.IOStreams) *cobra.Command {
+	var labelSelector string
+	cmd := &cobra.Command{
+		Use:   "export-config",
+		Short: i18n.T("Export multi-cluster kubeconfig"),
+		Long: templates.LongDesc(i18n.T(`
+			Export multi-cluster kubeconfig
+
+			Load existing cluster kubeconfig and list clusters registered in
+			KubeVela. Export the proxy access of these clusters to KubeConfig
+			and print it out.
+		`)),
+		Example: templates.Examples(i18n.T(`
+			# Export all clusters to kubeconfig
+			vela cluster export-config
+
+			# Export clusters with specified kubeconfig
+			KUBECONFIG=./my-hub-cluster.kubeconfig vela cluster export-config
+
+			# Export clusters with specified labels
+			vela cluster export-config -l gpu-cluster=true
+
+			# Export clusters to kubeconfig and save in file
+			vela cluster export-config > my-vela.kubeconfig
+
+			# Use the exported kubeconfig in kubectl
+			KUBECONFIG=my-vela.kubeconfig kubectl get namespaces --cluster c2
+		`)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := runtime.Must(clientcmd.NewDefaultClientConfigLoadingRules().Load())
+			ctx, ok := cfg.Contexts[cfg.CurrentContext]
+			if !ok {
+				return fmt.Errorf("cannot find current context %s in given config", cfg.CurrentContext)
+			}
+			baseCluster, ok := cfg.Clusters[ctx.Cluster]
+			if !ok {
+				return fmt.Errorf("cannot find base cluster %s in given config", ctx.Cluster)
+			}
+			selector, err := labels.Parse(labelSelector)
+			if err != nil {
+				return fmt.Errorf("invalid selector %s: %w", labelSelector, err)
+			}
+			clusters, err := prismclusterv1alpha1.NewClusterClient(f.Client()).List(cmd.Context(), client.MatchingLabelsSelector{Selector: selector})
+			if err != nil {
+				return fmt.Errorf("failed to load clusters: %w", err)
+			}
+			clusterNames := slices.Filter(
+				slices.Map(clusters.Items, func(cluster prismclusterv1alpha1.Cluster) string { return cluster.Name }),
+				func(s string) bool { return s != prismclusterv1alpha1.ClusterLocalName })
+
+			if len(clusterNames) == 0 {
+				return fmt.Errorf("no cluster found")
+			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%d cluster loaded: [%s]\n", len(clusterNames), strings.Join(clusterNames, ", "))
+
+			delete(cfg.Clusters, ctx.Cluster)
+			ctx.Cluster = types.ClusterLocalName
+			cfg.Clusters[types.ClusterLocalName] = baseCluster.DeepCopy()
+			for _, clusterName := range clusterNames {
+				cls := baseCluster.DeepCopy()
+				cls.LocationOfOrigin = ""
+				cls.Server = strings.Join([]string{cls.Server, "apis",
+					clustergatewayapi.SchemeGroupVersion.Group,
+					clustergatewayapi.SchemeGroupVersion.Version,
+					"clustergateways", clusterName, "proxy"}, "/")
+				cfg.Clusters[clusterName] = cls
+			}
+			bs, err := clientcmd.Write(*cfg)
+			if err != nil {
+				return fmt.Errorf("failed to marshal generated kubeconfig: %w", err)
+			}
+			_, _ = ioStreams.Out.Write(bs)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "kubeconfig generated.\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&labelSelector, "selector", "l", labelSelector, "LabelSelector for select clusters to export.")
+
+	return velacmd.NewCommandBuilder(f, cmd).WithResponsiveWriter().Build()
 }

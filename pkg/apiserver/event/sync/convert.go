@@ -46,11 +46,7 @@ func (c *CR2UX) ConvertApp2DatastoreApp(ctx context.Context, targetApp *v1beta1.
 	}
 	sourceOfTruth := model.FromCR
 	if _, ok := targetApp.Labels[oam.LabelAddonName]; ok && strings.HasPrefix(targetApp.Name, "addon-") && targetApp.Namespace == apitypes.DefaultKubeVelaNS {
-		project = v1.CreateProjectRequest{
-			Name:      model.DefaultSystemProject,
-			Alias:     model.DefaultSystemProjectAlias,
-			Namespace: targetApp.Namespace,
-		}
+		project = c.generateSystemProject(ctx, targetApp.Namespace)
 		sourceOfTruth = model.FromInner
 	}
 
@@ -62,6 +58,7 @@ func (c *CR2UX) ConvertApp2DatastoreApp(ctx context.Context, targetApp *v1beta1.
 		Labels: map[string]string{
 			model.LabelSyncNamespace:  targetApp.Namespace,
 			model.LabelSyncGeneration: strconv.FormatInt(targetApp.Generation, 10),
+			model.LabelSyncRevision:   getRevision(*targetApp),
 			model.LabelSourceOfTruth:  sourceOfTruth,
 		},
 	}
@@ -87,7 +84,7 @@ func (c *CR2UX) ConvertApp2DatastoreApp(ctx context.Context, targetApp *v1beta1.
 	if err != nil {
 		return nil, err
 	}
-	klog.Infof("generate the environment %s for the application %s", env.Name, targetApp.Name)
+	klog.V(5).Infof("generate the environment %s for the application %s", env.Name, targetApp.Name)
 	dsApp.Env = env
 	if newProject != "" {
 		project = v1.CreateProjectRequest{
@@ -149,12 +146,35 @@ func (c *CR2UX) ConvertApp2DatastoreApp(ctx context.Context, targetApp *v1beta1.
 	// 7. convert the revision
 	if revision := convert.FromCRApplicationRevision(ctx, cli, targetApp, *dsApp.Workflow, dsApp.Env.Name); revision != nil {
 		dsApp.Revision = revision
+	} else {
+		klog.Warningf("can't generate the application revision(%s) for the app %s", getRevision(*targetApp), targetApp.Name)
 	}
 	// 8. convert the workflow record
 	if record := convert.FromCRWorkflowRecord(targetApp, *dsApp.Workflow, dsApp.Revision); record != nil {
 		dsApp.Record = record
 	}
 	return dsApp, nil
+}
+
+// In order to maintain compatibility with old data,
+// if there is a project named addons, continue to use it, but change the alias to System.
+func (c *CR2UX) generateSystemProject(ctx context.Context, ns string) v1.CreateProjectRequest {
+	var pro = model.Project{Name: "addons"}
+	if err := c.ds.Get(ctx, &pro); err == nil {
+		if pro.Alias == "Addons" {
+			pro.Alias = model.DefaultSystemProjectAlias
+			pro.Namespace = ns
+			if err := c.ds.Put(ctx, &pro); err != nil {
+				klog.Warningf("failed to update the project alias to System:%s", err.Error())
+			}
+		}
+		return v1.CreateProjectRequest{Name: pro.Name, Alias: pro.Alias, Namespace: pro.Namespace}
+	}
+	return v1.CreateProjectRequest{
+		Name:      model.DefaultSystemProject,
+		Alias:     model.DefaultSystemProjectAlias,
+		Namespace: ns,
+	}
 }
 
 func (c *CR2UX) generateEnv(ctx context.Context, defaultProject string, envNamespace string, envTargetNames map[string]string) (*model.Env, string, error) {
@@ -170,7 +190,7 @@ func (c *CR2UX) generateEnv(ctx context.Context, defaultProject string, envNames
 				env.Targets = append(env.Targets, name)
 			}
 		}
-		return env, "", nil
+		return env, env.Project, nil
 	}
 
 	// generate new environment
@@ -211,4 +231,18 @@ func (c *CR2UX) generateEnv(ctx context.Context, defaultProject string, envNames
 		return env, newProject, nil
 	}
 	return env, "", nil
+}
+
+func getRevision(app v1beta1.Application) string {
+	if app.Status.LatestRevision == nil {
+		return ""
+	}
+	return app.Status.LatestRevision.Name
+}
+
+func getSyncedRevision(rev *model.ApplicationRevision) string {
+	if rev == nil {
+		return ""
+	}
+	return rev.Version
 }

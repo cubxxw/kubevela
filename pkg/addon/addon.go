@@ -911,7 +911,6 @@ func NewAddonInstaller(ctx context.Context, cli client.Client, discoveryClient *
 func (h *Installer) enableAddon(addon *InstallPackage) (string, error) {
 	var err error
 	h.addon = addon
-
 	if !h.skipVersionValidate {
 		err = checkAddonVersionMeetRequired(h.ctx, addon.SystemRequirements, h.cli, h.dc)
 		if err != nil {
@@ -1076,6 +1075,8 @@ func (h *Installer) checkDependency(addon *InstallPackage) ([]string, error) {
 
 // createOrUpdate will return true if updated
 func (h *Installer) createOrUpdate(app *v1beta1.Application) (bool, error) {
+	// Set the publish version for the addon application
+	oam.SetPublishVersion(app, apiutils.GenerateVersion("addon"))
 	var existApp v1beta1.Application
 	err := h.cli.Get(h.ctx, client.ObjectKey{Name: app.Name, Namespace: app.Namespace}, &existApp)
 	if apierrors.IsNotFound(err) {
@@ -1087,8 +1088,6 @@ func (h *Installer) createOrUpdate(app *v1beta1.Application) (bool, error) {
 	existApp.Spec = app.Spec
 	existApp.Labels = app.Labels
 	existApp.Annotations = app.Annotations
-	// Set the publish version for the addon application
-	oam.SetPublishVersion(&existApp, apiutils.GenerateVersion("addon"))
 	err = h.cli.Update(h.ctx, &existApp)
 	if err != nil {
 		klog.Errorf("fail to create application: %v", err)
@@ -1211,6 +1210,9 @@ func (h *Installer) dispatchAddonResource(addon *InstallPackage) error {
 }
 
 func (h *Installer) renderNotes(addon *InstallPackage) (string, error) {
+	if len(addon.Notes.Data) == 0 {
+		return "", nil
+	}
 	r := addonCueTemplateRender{
 		addon:     addon,
 		inputArgs: h.args,

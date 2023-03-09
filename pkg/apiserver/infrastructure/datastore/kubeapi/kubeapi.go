@@ -35,8 +35,8 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/oam-dev/kubevela/pkg/apiserver/infrastructure/clients"
 	"github.com/oam-dev/kubevela/pkg/apiserver/infrastructure/datastore"
+	pkgUtils "github.com/oam-dev/kubevela/pkg/utils"
 )
 
 type kubeapi struct {
@@ -46,17 +46,13 @@ type kubeapi struct {
 
 // New new kubeapi datastore instance
 // Data is stored using ConfigMap.
-func New(ctx context.Context, cfg datastore.Config) (datastore.DataStore, error) {
-	kubeClient, err := clients.GetKubeClient()
-	if err != nil {
-		return nil, err
-	}
+func New(ctx context.Context, cfg datastore.Config, client client.Client) (datastore.DataStore, error) {
 	if cfg.Database == "" {
 		cfg.Database = "kubevela_store"
 	}
 	var namespace corev1.Namespace
-	if err := kubeClient.Get(ctx, types.NamespacedName{Name: cfg.Database}, &namespace); apierrors.IsNotFound(err) {
-		if err := kubeClient.Create(ctx, &corev1.Namespace{
+	if err := client.Get(ctx, types.NamespacedName{Name: cfg.Database}, &namespace); apierrors.IsNotFound(err) {
+		if err := client.Create(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        cfg.Database,
 				Annotations: map[string]string{"description": "For KubeVela API Server metadata storage."},
@@ -64,9 +60,9 @@ func New(ctx context.Context, cfg datastore.Config) (datastore.DataStore, error)
 			return nil, fmt.Errorf("create namespace failure %w", err)
 		}
 	}
-	migrate(cfg.Database)
+	migrate(cfg.Database, client)
 	return &kubeapi{
-		kubeClient: kubeClient,
+		kubeClient: client,
 		namespace:  cfg.Database,
 	}, nil
 }
@@ -81,7 +77,7 @@ func generateName(entity datastore.Entity) string {
 
 func (m *kubeapi) generateConfigMap(entity datastore.Entity) *corev1.ConfigMap {
 	data, _ := json.Marshal(entity)
-	labels := entity.Index()
+	labels := convertIndex2Labels(entity.Index())
 	if labels == nil {
 		labels = make(map[string]string)
 	}
@@ -176,7 +172,7 @@ func (m *kubeapi) Put(ctx context.Context, entity datastore.Entity) error {
 		return datastore.ErrTableNameEmpty
 	}
 	// update labels
-	labels := entity.Index()
+	labels := convertIndex2Labels(entity.Index())
 	if labels == nil {
 		labels = make(map[string]string)
 	}
@@ -350,8 +346,8 @@ func (m *kubeapi) List(ctx context.Context, entity datastore.Entity, op *datasto
 
 	rq, _ := labels.NewRequirement(MigrateKey, selection.DoesNotExist, []string{"ok"})
 	selector = selector.Add(*rq)
-
-	for k, v := range entity.Index() {
+	metedataLabels := convertIndex2Labels(entity.Index())
+	for k, v := range metedataLabels {
 		rq, err := labels.NewRequirement(k, selection.Equals, []string{verifyValue(v)})
 		if err != nil {
 			return nil, datastore.ErrIndexInvalid
@@ -441,7 +437,8 @@ func (m *kubeapi) Count(ctx context.Context, entity datastore.Entity, filterOpti
 	if err != nil {
 		return 0, datastore.NewDBError(err)
 	}
-	for k, v := range entity.Index() {
+	metedataLabels := convertIndex2Labels(entity.Index())
+	for k, v := range metedataLabels {
 		rq, err := labels.NewRequirement(k, selection.Equals, []string{verifyValue(v)})
 		if err != nil {
 			return 0, datastore.ErrIndexInvalid
@@ -493,4 +490,20 @@ func verifyValue(v string) string {
 	s := strings.ReplaceAll(v, "@", "-")
 	s = strings.ReplaceAll(s, " ", "-")
 	return strings.ToLower(s)
+}
+
+func convertIndex2Labels(index map[string]interface{}) map[string]string {
+	if index == nil {
+		return nil
+	}
+	ret := make(map[string]string, len(index))
+	for k, v := range index {
+		value := pkgUtils.ToString(v)
+		if value == "" {
+			klog.Warningf("unable to cast %#v of type %T to string", v, v)
+			continue
+		}
+		ret[k] = pkgUtils.ToString(v)
+	}
+	return ret
 }

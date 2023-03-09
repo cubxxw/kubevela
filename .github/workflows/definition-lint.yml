@@ -28,7 +28,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Checkout
-        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           submodules: true
 
@@ -43,5 +43,5 @@ jobs:
           go build -o docgen hack/docgen/def/gen.go
           ./docgen --type=comp --force-example-doc --path=./comp-def-check.md
           ./docgen --type=trait --force-example-doc --path=./trait-def-check.md
-          ./docgen --type=wf --force-example-doc --path=./wf-def-check.md
+          ./docgen --type=wf --force-example-doc --path=./wf-def-check.md --def-dir=./vela-templates/definitions/internal/workflowstep/
           ./docgen --type=policy --force-example-doc --path=./policy-def-check.md

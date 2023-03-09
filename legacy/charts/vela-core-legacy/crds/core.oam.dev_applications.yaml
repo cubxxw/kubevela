@@ -774,6 +774,7 @@ spec:
                     x-kubernetes-map-type: atomic
                   endTime:
                     format: date-time
+                    nullable: true
                     type: string
                   finished:
                     type: boolean
@@ -933,6 +934,7 @@ spec:
                     inputs:
                       description: StepInputs defines variable input of WorkflowStep
                       items:
+                        description: InputItem defines an input variable of WorkflowStep
                         properties:
                           from:
                             type: string
@@ -947,6 +949,7 @@ spec:
                     outputs:
                       description: StepOutputs defines output variable of WorkflowStep
                       items:
+                        description: OutputItem defines an output variable of WorkflowStep
                         properties:
                           name:
                             type: string
@@ -1049,6 +1052,7 @@ spec:
                         inputs:
                           description: Inputs is the inputs of the step
                           items:
+                            description: InputItem defines an input variable of WorkflowStep
                             properties:
                               from:
                                 type: string
@@ -1070,6 +1074,8 @@ spec:
                         outputs:
                           description: Outputs is the outputs of the step
                           items:
+                            description: OutputItem defines an output variable of
+                              WorkflowStep
                             properties:
                               name:
                                 type: string
@@ -1100,6 +1106,8 @@ spec:
                               inputs:
                                 description: Inputs is the inputs of the step
                                 items:
+                                  description: InputItem defines an input variable
+                                    of WorkflowStep
                                   properties:
                                     from:
                                       type: string
@@ -1123,6 +1131,8 @@ spec:
                               outputs:
                                 description: Outputs is the outputs of the step
                                 items:
+                                  description: OutputItem defines an output variable
+                                    of WorkflowStep
                                   properties:
                                     name:
                                       type: string
@@ -1535,6 +1545,7 @@ spec:
                     x-kubernetes-map-type: atomic
                   endTime:
                     format: date-time
+                    nullable: true
                     type: string
                   finished:
                     type: boolean

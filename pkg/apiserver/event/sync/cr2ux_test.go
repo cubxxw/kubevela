@@ -26,6 +26,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/apiserver/domain/model"
 	"github.com/oam-dev/kubevela/pkg/apiserver/domain/service"
@@ -138,7 +139,7 @@ var _ = Describe("Test CR convert to ux", func() {
 		app2 := &v1beta1.Application{}
 		Expect(common2.ReadYamlToObject("testdata/test-app2.yaml", app2)).Should(BeNil())
 		app1.Namespace = appNS1
-		app1.Generation = 2
+		app1.Status.LatestRevision = &common.Revision{Name: "v2"}
 		app1.Spec = app2.Spec
 		Expect(cr2ux.AddOrUpdate(context.Background(), app1)).Should(BeNil())
 		comp3 := model.ApplicationComponent{AppPrimaryKey: apName1, Name: "blog"}
@@ -216,6 +217,47 @@ var _ = Describe("Test CR convert to ux", func() {
 		Expect(count).Should(Equal(int64(2)))
 	})
 
+	It("Test to sync the project which existed env belongs", func() {
+		dbNamespace := "update-app-db-ns1-test"
+		ds, err := NewDatastore(datastore.Config{Type: "kubeapi", Database: dbNamespace})
+		Expect(err).Should(BeNil())
+
+		cr2ux := newCR2UX(ds)
+
+		projectName := "project-test"
+
+		_, err = cr2ux.projectService.CreateProject(context.TODO(), v1.CreateProjectRequest{
+			Name:  projectName,
+			Owner: "admin",
+		})
+		Expect(err).Should(BeNil())
+
+		_, err = cr2ux.targetService.CreateTarget(context.TODO(), v1.CreateTargetRequest{
+			Name:    "target-test1",
+			Project: projectName,
+			Cluster: &v1.ClusterTarget{
+				ClusterName: "local",
+				Namespace:   "target-test1",
+			},
+		})
+		Expect(err).Should(BeNil())
+		_, err = cr2ux.envService.CreateEnv(context.TODO(), v1.CreateEnvRequest{
+			Name:      "env-test1",
+			Project:   projectName,
+			Namespace: "env-test1",
+			Targets:   []string{"target-test1"},
+		})
+		Expect(err).Should(BeNil())
+
+		app5 := &v1beta1.Application{}
+		Expect(common2.ReadYamlToObject("testdata/test-app5.yaml", app5)).Should(BeNil())
+		app5.Namespace = "env-test1"
+		Expect(cr2ux.AddOrUpdate(context.Background(), app5)).Should(BeNil())
+
+		app, err := cr2ux.applicationService.GetApplication(context.TODO(), app5.Name)
+		Expect(err).Should(BeNil())
+		Expect(app.Project).Should(Equal("project-test"))
+	})
 })
 
 func newCR2UX(ds datastore.DataStore) *CR2UX {

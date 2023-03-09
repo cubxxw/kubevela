@@ -116,6 +116,7 @@ func TestAddonEnableCmdWithErrLocalPath(t *testing.T) {
 	ioStream := util.IOStreams{}
 	commandArgs := common.Args{}
 	cmd := NewAddonEnableCommand(commandArgs, ioStream)
+	initCommand(cmd)
 
 	for _, s := range testcase {
 		cmd.SetArgs(s.args)
@@ -180,6 +181,7 @@ func TestAddonUpgradeCmdWithErrLocalPath(t *testing.T) {
 	ioStream := util.IOStreams{}
 	commandArgs := common.Args{}
 	cmd := NewAddonUpgradeCommand(commandArgs, ioStream)
+	initCommand(cmd)
 
 	for _, s := range testcase {
 		cmd.SetArgs(s.args)
@@ -191,19 +193,19 @@ func TestAddonUpgradeCmdWithErrLocalPath(t *testing.T) {
 func TestTransCluster(t *testing.T) {
 	testcase := []struct {
 		str string
-		res []string
+		res []interface{}
 	}{
 		{
 			str: "{cluster1, cluster2}",
-			res: []string{"cluster1", "cluster2"},
+			res: []interface{}{"cluster1", "cluster2"},
 		},
 		{
 			str: "{cluster1,cluster2}",
-			res: []string{"cluster1", "cluster2"},
+			res: []interface{}{"cluster1", "cluster2"},
 		},
 		{
 			str: "{cluster1,  cluster2   }",
-			res: []string{"cluster1", "cluster2"},
+			res: []interface{}{"cluster1", "cluster2"},
 		},
 	}
 	for _, s := range testcase {

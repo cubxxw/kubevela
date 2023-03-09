@@ -40,6 +40,7 @@ import (
 
 	"github.com/kubevela/pkg/util/compression"
 
+	"github.com/kubevela/pkg/controller/sharding"
 	monitorContext "github.com/kubevela/pkg/monitor/context"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
@@ -842,8 +843,9 @@ func (h *AppHandler) FinalizeAndApplyAppRevision(ctx context.Context) error {
 		Kind:       v1beta1.ApplicationKind,
 		Name:       h.app.Name,
 		UID:        h.app.UID,
-		Controller: pointer.BoolPtr(true),
+		Controller: pointer.Bool(true),
 	}})
+	sharding.PropagateScheduledShardIDLabel(h.app, appRev)
 
 	gotAppRev := &v1beta1.ApplicationRevision{}
 	if err := h.r.Get(ctx, client.ObjectKey{Name: appRev.Name, Namespace: appRev.Namespace}, gotAppRev); err != nil {

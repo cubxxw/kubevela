@@ -4,8 +4,8 @@ apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
   annotations:
+    custom.definition.oam.dev/category: Scripts & Commands
     definition.oam.dev/description: Run a vela command
-    definition.oam.dev/example-url: https://raw.githubusercontent.com/kubevela/workflow/main/examples/workflow-run/apply-terraform-resource.yaml
   name: vela-cli
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:

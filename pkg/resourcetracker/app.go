@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
+	"github.com/kubevela/pkg/controller/sharding"
 	"github.com/kubevela/pkg/util/compression"
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -98,6 +99,7 @@ func createResourceTracker(ctx context.Context, cli client.Client, app *v1beta1.
 	if utilfeature.DefaultMutableFeatureGate.Enabled(features.ZstdResourceTracker) {
 		rt.Spec.Compression.Type = compression.Zstd
 	}
+	sharding.PropagateScheduledShardIDLabel(app, rt)
 	if err := cli.Create(ctx, rt); err != nil {
 		return nil, err
 	}

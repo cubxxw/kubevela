@@ -50,19 +50,6 @@ import (
 )
 
 const (
-	// DescAnnotation records the description of addon
-	DescAnnotation = "addons.oam.dev/description"
-
-	// DependsOnWorkFlowStepName is workflow step name which is used to check dependsOn app
-	DependsOnWorkFlowStepName = "depends-on-app"
-
-	// AddonTerraformProviderNamespace is the namespace of addon terraform provider
-	AddonTerraformProviderNamespace = "default"
-	// AddonTerraformProviderNameArgument is the argument name of addon terraform provider
-	AddonTerraformProviderNameArgument = "providerName"
-)
-
-const (
 	statusEnabled  = "enabled"
 	statusDisabled = "disabled"
 	statusSuspend  = "suspend"
@@ -180,24 +167,24 @@ func NewAddonEnableCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Com
 			addonArgs[pkgaddon.InstallerRuntimeOption] = map[string]interface{}{
 				"upgrade": false,
 			}
-
+			var addonName string
 			if file, err := os.Stat(addonOrDir); err == nil {
 				if !file.IsDir() {
 					return fmt.Errorf("%s is not addon dir", addonOrDir)
 				}
-				ioStream.Infof("enable addon by local dir: %s \n", addonOrDir)
+				ioStream.Infof(color.New(color.FgYellow).Sprintf("enabling addon by local dir: %s \n", addonOrDir))
 				// args[0] is a local path install with local dir, use base dir name as addonName
 				abs, err := filepath.Abs(addonOrDir)
 				if err != nil {
 					return errors.Wrapf(err, "directory %s is invalid", addonOrDir)
 				}
-				name = filepath.Base(abs)
+				addonName = filepath.Base(abs)
 				if !yes2all {
-					if err := checkUninstallFromClusters(ctx, k8sClient, name, addonArgs); err != nil {
+					if err := checkUninstallFromClusters(ctx, k8sClient, addonName, addonArgs); err != nil {
 						return err
 					}
 				}
-				additionalInfo, err = enableAddonByLocal(ctx, name, addonOrDir, k8sClient, dc, config, addonArgs)
+				additionalInfo, err = enableAddonByLocal(ctx, addonName, addonOrDir, k8sClient, dc, config, addonArgs)
 				if err != nil {
 					return err
 				}
@@ -205,8 +192,12 @@ func NewAddonEnableCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Com
 				if filepath.IsAbs(addonOrDir) || strings.HasPrefix(addonOrDir, ".") || strings.HasSuffix(addonOrDir, "/") {
 					return fmt.Errorf("addon directory %s not found in local file system", addonOrDir)
 				}
+				_, addonName, err = splitSpecifyRegistry(name)
+				if err != nil {
+					return fmt.Errorf("failed to split addonName and addonRegistry: %w", err)
+				}
 				if !yes2all {
-					if err := checkUninstallFromClusters(ctx, k8sClient, name, addonArgs); err != nil {
+					if err := checkUninstallFromClusters(ctx, k8sClient, addonName, addonArgs); err != nil {
 						return err
 					}
 				}
@@ -218,8 +209,8 @@ func NewAddonEnableCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Com
 			if dryRun {
 				return nil
 			}
-			fmt.Printf("Addon %s enabled successfully.\n", name)
-			AdditionalEndpointPrinter(ctx, c, k8sClient, name, additionalInfo, false)
+			fmt.Printf("Addon %s enabled successfully.\n", addonName)
+			AdditionalEndpointPrinter(ctx, c, k8sClient, addonName, additionalInfo, false)
 			return nil
 		},
 	}
@@ -314,7 +305,7 @@ non-empty new arg
 				if !file.IsDir() {
 					return fmt.Errorf("%s is not addon dir", addonOrDir)
 				}
-				ioStream.Infof("enable addon by local dir: %s \n", addonOrDir)
+				ioStream.Infof(color.New(color.FgYellow).Sprintf("enabling addon by local dir: %s \n", addonOrDir))
 				// args[0] is a local path install with local dir
 				abs, err := filepath.Abs(addonOrDir)
 				if err != nil {
@@ -1172,12 +1163,12 @@ func hasAddon(addons []*pkgaddon.UIData, name string) bool {
 	return false
 }
 
-func transClusters(cstr string) []string {
+func transClusters(cstr string) []interface{} {
 	if len(cstr) == 0 {
 		return nil
 	}
 	cstr = strings.TrimPrefix(strings.TrimSuffix(cstr, "}"), "{")
-	var clusterL []string
+	var clusterL []interface{}
 	clusterList := strings.Split(cstr, ",")
 	for _, v := range clusterList {
 		clusterL = append(clusterL, strings.TrimSpace(v))

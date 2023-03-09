@@ -99,6 +99,7 @@ type ApplicationService interface {
 	CreateApplicationTrigger(ctx context.Context, app *model.Application, req apisv1.CreateApplicationTriggerRequest) (*apisv1.ApplicationTriggerBase, error)
 	ListApplicationTriggers(ctx context.Context, app *model.Application) ([]*apisv1.ApplicationTriggerBase, error)
 	DeleteApplicationTrigger(ctx context.Context, app *model.Application, triggerName string) error
+	UpdateApplicationTrigger(ctx context.Context, app *model.Application, token string, req apisv1.UpdateApplicationTriggerRequest) (*apisv1.ApplicationTriggerBase, error)
 }
 
 type applicationServiceImpl struct {
@@ -410,6 +411,18 @@ func (c *applicationServiceImpl) CreateApplication(ctx context.Context, req apis
 
 // CreateApplicationTrigger create application trigger
 func (c *applicationServiceImpl) CreateApplicationTrigger(ctx context.Context, app *model.Application, req apisv1.CreateApplicationTriggerRequest) (*apisv1.ApplicationTriggerBase, error) {
+	// checking the workflow
+	_, err := c.WorkflowService.GetWorkflow(ctx, app, req.WorkflowName)
+	if err != nil {
+		return nil, err
+	}
+	if req.ComponentName != "" {
+		_, err := c.GetApplicationComponent(ctx, app, req.ComponentName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	trigger := &model.ApplicationTrigger{
 		AppPrimaryKey: app.Name,
 		WorkflowName:  req.WorkflowName,
@@ -427,18 +440,7 @@ func (c *applicationServiceImpl) CreateApplicationTrigger(ctx context.Context, a
 		return nil, err
 	}
 
-	return &apisv1.ApplicationTriggerBase{
-		WorkflowName:  req.WorkflowName,
-		Name:          req.Name,
-		Alias:         req.Alias,
-		Description:   req.Description,
-		Type:          req.Type,
-		PayloadType:   req.PayloadType,
-		Token:         trigger.Token,
-		ComponentName: trigger.ComponentName,
-		CreateTime:    trigger.CreateTime,
-		UpdateTime:    trigger.UpdateTime,
-	}, nil
+	return assembler.ConvertTrigger2DTO(*trigger), nil
 }
 
 // DeleteApplicationTrigger delete application trigger
@@ -455,6 +457,42 @@ func (c *applicationServiceImpl) DeleteApplicationTrigger(ctx context.Context, a
 		return err
 	}
 	return nil
+}
+
+// UpdateApplicationTrigger update application trigger
+func (c *applicationServiceImpl) UpdateApplicationTrigger(ctx context.Context, app *model.Application, token string, req apisv1.UpdateApplicationTriggerRequest) (*apisv1.ApplicationTriggerBase, error) {
+	trigger := model.ApplicationTrigger{
+		AppPrimaryKey: app.PrimaryKey(),
+		Token:         token,
+	}
+	if err := c.Store.Get(ctx, &trigger); err != nil {
+		if errors.Is(err, datastore.ErrRecordNotExist) {
+			return nil, bcode.ErrApplicationTriggerNotExist
+		}
+		klog.Warningf("get app trigger failure %s", err.Error())
+		return nil, err
+	}
+	// checking the workflow
+	_, err := c.WorkflowService.GetWorkflow(ctx, app, req.WorkflowName)
+	if err != nil {
+		return nil, err
+	}
+	if req.ComponentName != "" {
+		_, err := c.GetApplicationComponent(ctx, app, req.ComponentName)
+		if err != nil {
+			return nil, err
+		}
+	}
+	trigger.Alias = req.Alias
+	trigger.ComponentName = req.ComponentName
+	trigger.Description = req.Description
+	trigger.WorkflowName = req.WorkflowName
+	trigger.Registry = req.Registry
+	trigger.PayloadType = req.PayloadType
+	if err := c.Store.Put(ctx, &trigger); err != nil {
+		return nil, err
+	}
+	return assembler.ConvertTrigger2DTO(trigger), nil
 }
 
 // ListApplicationTrigger list application triggers
@@ -607,7 +645,8 @@ func (c *applicationServiceImpl) DetailComponent(ctx context.Context, app *model
 		return nil, err
 	}
 	var cd v1beta1.ComponentDefinition
-	if err := c.KubeClient.Get(ctx, types.NamespacedName{Name: component.Type, Namespace: velatypes.DefaultKubeVelaNS}, &cd); err != nil {
+	loadCtx := utils.WithProject(ctx, "")
+	if err := c.KubeClient.Get(loadCtx, types.NamespacedName{Name: component.Type, Namespace: velatypes.DefaultKubeVelaNS}, &cd); err != nil {
 		klog.Warningf("component definition %s get failure. %s", pkgUtils.Sanitize(component.Type), err.Error())
 	}
 
@@ -1072,7 +1111,8 @@ func (c *applicationServiceImpl) UpdateComponent(ctx context.Context, app *model
 
 func (c *applicationServiceImpl) createComponent(ctx context.Context, app *model.Application, com apisv1.CreateComponentRequest, main bool) (*apisv1.ComponentBase, error) {
 	var cd v1beta1.ComponentDefinition
-	if err := c.KubeClient.Get(ctx, types.NamespacedName{Name: com.ComponentType, Namespace: velatypes.DefaultKubeVelaNS}, &cd); err != nil {
+	loadCtx := utils.WithProject(ctx, "")
+	if err := c.KubeClient.Get(loadCtx, types.NamespacedName{Name: com.ComponentType, Namespace: velatypes.DefaultKubeVelaNS}, &cd); err != nil {
 		klog.Warningf("component definition %s get failure. %s", pkgUtils.Sanitize(com.ComponentType), err.Error())
 		return nil, bcode.ErrComponentTypeNotSupport
 	}
@@ -1712,6 +1752,10 @@ func (c *applicationServiceImpl) RollbackWithRevision(ctx context.Context, appli
 	work, _, err := convert.FromCRWorkflow(ctx, c.KubeClient, application.PrimaryKey(), rollbackApplication, revision.EnvName)
 	if err != nil {
 		return nil, err
+	}
+	// The deploy version is the primary key of the revision
+	if rollbackApplication.Annotations[oam.AnnotationDeployVersion] == "" {
+		rollbackApplication.Annotations[oam.AnnotationDeployVersion] = publishVersion
 	}
 	record, err := c.WorkflowService.CreateWorkflowRecord(ctx, application, rollbackApplication, &work)
 	if err != nil {

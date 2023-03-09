@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	v12 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -669,6 +670,14 @@ func additionalInfo(obj unstructured.Unstructured) (map[string]interface{}, erro
 		case "Service":
 			infoFunc = svcAdditionalInfo
 		}
+	case "apps":
+		switch kind {
+		case "Deployment":
+			infoFunc = deploymentAdditionalInfo
+		case "StatefulSet":
+			infoFunc = statefulSetAdditionalInfo
+		default:
+		}
 	default:
 	}
 	if infoFunc != nil {
@@ -718,14 +727,6 @@ func podAdditionalInfo(obj unstructured.Unstructured) (map[string]interface{}, e
 			}
 		}
 		return false
-	}
-
-	translateTimestampSince := func(timestamp v1.Time) string {
-		if timestamp.IsZero() {
-			return "<unknown>"
-		}
-
-		return duration.HumanDuration(time.Since(timestamp.Time))
 	}
 
 	restarts := 0
@@ -808,6 +809,42 @@ func podAdditionalInfo(obj unstructured.Unstructured) (map[string]interface{}, e
 		"Status":   reason,
 		"Restarts": restarts,
 		"Age":      translateTimestampSince(pod.CreationTimestamp),
+	}, nil
+}
+
+func deploymentAdditionalInfo(obj unstructured.Unstructured) (map[string]interface{}, error) {
+	deployment := appsv1.Deployment{}
+	err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &deployment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured Deployment to typed: %w", err)
+	}
+
+	readyReplicas := deployment.Status.ReadyReplicas
+	desiredReplicas := deployment.Spec.Replicas
+	updatedReplicas := deployment.Status.UpdatedReplicas
+	availableReplicas := deployment.Status.AvailableReplicas
+
+	return map[string]interface{}{
+		"Ready":     fmt.Sprintf("%d/%d", readyReplicas, *desiredReplicas),
+		"Update":    updatedReplicas,
+		"Available": availableReplicas,
+		"Age":       translateTimestampSince(deployment.CreationTimestamp),
+	}, nil
+}
+
+func statefulSetAdditionalInfo(obj unstructured.Unstructured) (map[string]interface{}, error) {
+	statefulSet := appsv1.StatefulSet{}
+	err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &statefulSet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert unstructured StatefulSet to typed: %w", err)
+	}
+
+	readyReplicas := statefulSet.Status.ReadyReplicas
+	desiredReplicas := statefulSet.Spec.Replicas
+
+	return map[string]interface{}{
+		"Ready": fmt.Sprintf("%d/%d", readyReplicas, *desiredReplicas),
+		"Age":   translateTimestampSince(statefulSet.CreationTimestamp),
 	}, nil
 }
 
@@ -908,7 +945,7 @@ func iterateListSubResources(ctx context.Context, cluster string, k8sClient clie
 			clusterCTX := multicluster.ContextWithClusterName(ctx, cluster)
 			items, err := listItemByRule(clusterCTX, k8sClient, resource, *parentObject, specifiedFunc, rule.DefaultGenListOptionFunc, rule.DisableFilterByOwnerReference)
 			if err != nil {
-				if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
+				if meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) || kerrors.IsNotFound(err) {
 					klog.Warningf("ignore list resources: %s as %v", resource.Kind, err)
 					continue
 				}
@@ -1004,4 +1041,12 @@ func mergeCustomRules(ctx context.Context, k8sClient client.Client) error {
 		}
 	}
 	return nil
+}
+
+func translateTimestampSince(timestamp v1.Time) string {
+	if timestamp.IsZero() {
+		return "<unknown>"
+	}
+
+	return duration.HumanDuration(time.Since(timestamp.Time))
 }

@@ -48,6 +48,7 @@ var _ = Describe("Test workflow service functions", func() {
 		projectService  *projectServiceImpl
 		envService      *envServiceImpl
 		envBinding      *envBindingServiceImpl
+		targetService   *targetServiceImpl
 		testProject     = "workflow-project"
 		ds              datastore.DataStore
 	)
@@ -60,6 +61,7 @@ var _ = Describe("Test workflow service functions", func() {
 		rbacService := &rbacServiceImpl{Store: ds}
 		projectService = &projectServiceImpl{Store: ds, RbacService: rbacService, K8sClient: k8sClient}
 		envService = &envServiceImpl{Store: ds, KubeClient: k8sClient, ProjectService: projectService}
+		targetService = &targetServiceImpl{Store: ds, K8sClient: k8sClient}
 		envBinding = &envBindingServiceImpl{
 			Store:           ds,
 			WorkflowService: workflowService,
@@ -77,11 +79,20 @@ var _ = Describe("Test workflow service functions", func() {
 			ProjectService:    projectService,
 			EnvService:        envService,
 			EnvBindingService: envBinding,
+			WorkflowService:   workflowService,
 		}
 	})
 	It("Test CreateWorkflow function", func() {
+
 		_, err := projectService.CreateProject(context.TODO(), apisv1.CreateProjectRequest{Name: testProject})
 		Expect(err).Should(BeNil())
+		_, err = targetService.CreateTarget(context.TODO(), apisv1.CreateTargetRequest{
+			Name: "dev-1", Project: testProject, Cluster: &apisv1.ClusterTarget{ClusterName: "local", Namespace: "dev-1"}})
+		Expect(err).Should(BeNil())
+
+		_, err = envService.CreateEnv(context.TODO(), apisv1.CreateEnvRequest{Name: "dev", Namespace: "dev-1", Targets: []string{"dev-1"}, Project: testProject})
+		Expect(err).Should(BeNil())
+
 		reqApp := apisv1.CreateApplicationRequest{
 			Name:        appName,
 			Project:     testProject,
@@ -413,7 +424,7 @@ var _ = Describe("Test workflow service functions", func() {
 
 		err = workflowService.ResumeRecord(ctx, &model.Application{
 			Name: appName,
-		}, &model.Workflow{Name: ResumeWorkflow, EnvName: "resume"}, "workflow-resume-1")
+		}, &model.Workflow{Name: ResumeWorkflow, EnvName: "resume"}, "workflow-resume-1", "")
 		Expect(err).Should(BeNil())
 
 		record, err := workflowService.DetailWorkflowRecord(ctx, &model.Workflow{Name: ResumeWorkflow, AppPrimaryKey: appName}, "workflow-resume-1")

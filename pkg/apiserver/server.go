@@ -43,6 +43,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/apiserver/utils"
 	"github.com/oam-dev/kubevela/pkg/apiserver/utils/container"
 	pkgconfig "github.com/oam-dev/kubevela/pkg/config"
+	"github.com/oam-dev/kubevela/pkg/features"
 	pkgUtils "github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 )
@@ -86,6 +87,8 @@ func (s *restServer) buildIoCContainer() error {
 	if err != nil {
 		return err
 	}
+	authClient := utils.NewAuthClient(kubeClient)
+
 	var ds datastore.DataStore
 	switch s.cfg.Datastore.Type {
 	case "mongodb":
@@ -94,7 +97,7 @@ func (s *restServer) buildIoCContainer() error {
 			return fmt.Errorf("create mongodb datastore instance failure %w", err)
 		}
 	case "kubeapi":
-		ds, err = kubeapi.New(context.Background(), s.cfg.Datastore)
+		ds, err = kubeapi.New(context.Background(), s.cfg.Datastore, kubeClient)
 		if err != nil {
 			return fmt.Errorf("create kubeapi datastore instance failure %w", err)
 		}
@@ -106,23 +109,22 @@ func (s *restServer) buildIoCContainer() error {
 		return fmt.Errorf("fail to provides the datastore bean to the container: %w", err)
 	}
 
-	kubeClient = utils.NewAuthClient(kubeClient)
-	if err := s.beanContainer.ProvideWithName("kubeClient", kubeClient); err != nil {
+	if err := s.beanContainer.ProvideWithName("kubeClient", authClient); err != nil {
 		return fmt.Errorf("fail to provides the kubeClient bean to the container: %w", err)
 	}
 	if err := s.beanContainer.ProvideWithName("kubeConfig", kubeConfig); err != nil {
 		return fmt.Errorf("fail to provides the kubeConfig bean to the container: %w", err)
 	}
-	if err := s.beanContainer.ProvideWithName("apply", apply.NewAPIApplicator(kubeClient)); err != nil {
+	if err := s.beanContainer.ProvideWithName("apply", apply.NewAPIApplicator(authClient)); err != nil {
 		return fmt.Errorf("fail to provides the apply bean to the container: %w", err)
 	}
 
-	factory := pkgconfig.NewConfigFactory(kubeClient)
+	factory := pkgconfig.NewConfigFactory(authClient)
 	if err := s.beanContainer.ProvideWithName("configFactory", factory); err != nil {
 		return fmt.Errorf("fail to provides the config factory bean to the container: %w", err)
 	}
 
-	addonStore := pkgaddon.NewRegistryDataStore(kubeClient)
+	addonStore := pkgaddon.NewRegistryDataStore(authClient)
 	if err := s.beanContainer.ProvideWithName("registryDatastore", addonStore); err != nil {
 		return fmt.Errorf("fail to provides the registry datastore bean to the container: %w", err)
 	}
@@ -148,6 +150,12 @@ func (s *restServer) buildIoCContainer() error {
 }
 
 func (s *restServer) Run(ctx context.Context, errChan chan error) error {
+
+	for feature := range features.APIServerMutableFeatureGate.GetAll() {
+		if features.APIServerFeatureGate.Enabled(feature) {
+			klog.Infof("The %s feature enabled", feature)
+		}
+	}
 
 	// build the Ioc Container
 	if err := s.buildIoCContainer(); err != nil {

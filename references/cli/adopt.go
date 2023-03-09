@@ -17,6 +17,7 @@ limitations under the License.
 package cli
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,7 @@ import (
 	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	cmdutil "github.com/oam-dev/kubevela/pkg/cmd/util"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
+	"github.com/oam-dev/kubevela/pkg/utils/env"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
@@ -98,6 +100,7 @@ type AdoptOptions struct {
 
 	Apply   bool
 	Recycle bool
+	Yes     bool
 
 	AdoptTemplateFile     string
 	AdoptTemplate         string
@@ -133,6 +136,9 @@ func (opt *AdoptOptions) parseResourceRef(f velacmd.Factory, cmd *cobra.Command,
 		or.Name = parts[1]
 		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 			or.Namespace = velacmd.GetNamespace(f, cmd)
+			if or.Namespace == "" {
+				or.Namespace = env.DefaultEnvNamespace
+			}
 		}
 	case 3:
 		or.Namespace = parts[1]
@@ -159,6 +165,9 @@ func (opt *AdoptOptions) Complete(f velacmd.Factory, cmd *cobra.Command, args []
 			return ref.Name == opt.NativeResourceRefs[0].Name
 		}) {
 			opt.AppName = opt.NativeResourceRefs[0].Name
+		}
+		if opt.AppNamespace == "" {
+			opt.AppNamespace = opt.NativeResourceRefs[0].Namespace
 		}
 	case adoptTypeHelm:
 		if len(args) > 0 {
@@ -187,6 +196,20 @@ func (opt *AdoptOptions) Complete(f velacmd.Factory, cmd *cobra.Command, args []
 		opt.AdoptTemplate = string(bs)
 	} else {
 		opt.AdoptTemplate = defaultAdoptTemplate
+	}
+	if opt.AppName != "" {
+		var ctx = context.Background()
+		app := &v1beta1.Application{}
+		err := f.Client().Get(ctx, apitypes.NamespacedName{Namespace: opt.AppNamespace, Name: opt.AppName}, app)
+		if err == nil && app != nil {
+			if !opt.Yes {
+				userInput := NewUserInput()
+				confirm := userInput.AskBool("Application '%s' already exists, apply will override the existing app with the adopted one, please confirm [Y/n]: "+opt.AppName, &UserInputOptions{AssumeYes: false})
+				if !confirm {
+					return nil
+				}
+			}
+		}
 	}
 	opt.AdoptTemplateCUEValue = cuecontext.New().CompileString(fmt.Sprintf("%s\n\n%s: %s", opt.AdoptTemplate, adoptCUETempVal, adoptCUETempFunc))
 	return nil
@@ -277,6 +300,12 @@ func (opt *AdoptOptions) render() (*v1beta1.Application, error) {
 	}
 	if err = json.Unmarshal(bs, app); err != nil {
 		return nil, fmt.Errorf("failed to parse template $returns into application: %w", err)
+	}
+	if app.Name == "" {
+		app.Name = opt.AppName
+	}
+	if app.Namespace == "" {
+		app.Namespace = opt.AppNamespace
 	}
 	return app, nil
 }
@@ -450,6 +479,7 @@ func NewAdoptCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Command {
 	cmd.Flags().StringVarP(&o.HelmDriver, "driver", "d", o.HelmDriver, "The storage backend of helm adoption. Only take effect when --type=helm.")
 	cmd.Flags().BoolVarP(&o.Apply, "apply", "", o.Apply, "If true, the application for adoption will be applied. Otherwise, it will only be printed.")
 	cmd.Flags().BoolVarP(&o.Recycle, "recycle", "", o.Recycle, "If true, when the adoption application is successfully applied, the old storage (like Helm secret) will be recycled.")
+	cmd.Flags().BoolVarP(&o.Yes, "yes", "y", o.Yes, "Skip confirmation prompt")
 	return velacmd.NewCommandBuilder(f, cmd).
 		WithNamespaceFlag().
 		WithResponsiveWriter().

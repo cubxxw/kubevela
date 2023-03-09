@@ -107,7 +107,11 @@ func (wl *Workload) GetTemplateContext(ctx process.Context, client client.Client
 	if wl.SkipApplyWorkload {
 		return nil, nil
 	}
-	return wl.engine.GetTemplateContext(ctx, client, accessor)
+	templateContext, err := wl.engine.GetTemplateContext(ctx, client, accessor)
+	if templateContext != nil {
+		templateContext[velaprocess.ParameterFieldName] = wl.Params
+	}
+	return templateContext, err
 }
 
 // EvalStatus eval workload status
@@ -160,7 +164,11 @@ func (trait *Trait) EvalContext(ctx process.Context) error {
 
 // GetTemplateContext get trait template context, it will be used to eval status and health
 func (trait *Trait) GetTemplateContext(ctx process.Context, client client.Client, accessor util.NamespaceAccessor) (map[string]interface{}, error) {
-	return trait.engine.GetTemplateContext(ctx, client, accessor)
+	templateContext, err := trait.engine.GetTemplateContext(ctx, client, accessor)
+	if templateContext != nil {
+		templateContext[velaprocess.ParameterFieldName] = trait.Params
+	}
+	return templateContext, err
 }
 
 // EvalStatus eval trait status
@@ -345,7 +353,7 @@ func (af *Appfile) SetOAMContract(comp *types.ComponentManifest) error {
 	}
 	for _, trait := range comp.Traits {
 		af.assembleTrait(trait, compName, commonLabels)
-		if err := af.setWorkloadRefToTrait(workloadRef, trait); err != nil {
+		if err := af.setWorkloadRefToTrait(workloadRef, trait); err != nil && !IsNotFoundInAppFile(err) {
 			return errors.WithMessagef(err, "cannot set workload reference to trait %q", trait.GetName())
 		}
 	}
@@ -497,6 +505,11 @@ func (af *Appfile) setWorkloadRefToTrait(wlRef corev1.ObjectReference, trait *un
 		}
 	}
 	return nil
+}
+
+// IsNotFoundInAppFile check if the target error is `not found in appfile`
+func IsNotFoundInAppFile(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found in appfile")
 }
 
 // PrepareProcessContext prepares a DSL process Context

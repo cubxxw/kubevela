@@ -94,6 +94,15 @@ var (
 		common.PolicyType:       oam.LabelPolicyDefinitionName,
 		common.WorkflowStepType: oam.LabelWorkflowStepDefinitionName,
 	}
+	// DefinitionKindToType maps the definition kinds to a shorter type
+	DefinitionKindToType = map[string]string{
+		v1beta1.ComponentDefinitionKind:    "component",
+		v1beta1.TraitDefinitionKind:        "trait",
+		v1beta1.PolicyDefinitionKind:       "policy",
+		v1beta1.WorkloadDefinitionKind:     "workload",
+		v1beta1.ScopeDefinitionKind:        "scope",
+		v1beta1.WorkflowStepDefinitionKind: "workflow-step",
+	}
 )
 
 // Definition the general struct for handling all kinds of definitions like ComponentDefinition or TraitDefinition
@@ -403,17 +412,16 @@ func (def *Definition) FromCUEString(cueString string, config *rest.Config) erro
 	if err != nil {
 		return err
 	}
+	var pd *packages.PackageDiscover
 	// validate template
 	if config != nil {
-		pd, err := packages.NewPackageDiscover(config)
+		pd, err = packages.NewPackageDiscover(config)
 		if err != nil {
 			return err
 		}
-		if _, err = value.NewValue(templateString+"\n"+velacue.BaseTemplate, pd, ""); err != nil {
-			return err
-		}
-	} else if val := cuectx.CompileString(templateString + "\n" + velacue.BaseTemplate); val.Err() != nil {
-		return val.Err()
+	}
+	if _, err = value.NewValue(templateString+"\n"+velacue.BaseTemplate, pd, ""); err != nil {
+		return err
 	}
 	return def.FromCUE(&inst, templateString)
 }
