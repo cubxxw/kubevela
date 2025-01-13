@@ -1,16 +1,18 @@
 import (
-	"vela/op"
+	"vela/kube"
 	"encoding/base64"
 	"encoding/json"
 )
 
 "export2secret": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "Resource Management"
+	}
 	description: "Export data to Kubernetes Secret in your workflow."
 }
 template: {
-	secret: op.#Steps & {
+	secret: {
 		data: *parameter.data | {}
 		if parameter.kind == "docker-registry" && parameter.dockerRegistry != _|_ {
 			registryData: {
@@ -26,28 +28,30 @@ template: {
 				".dockerconfigjson": json.Marshal(registryData)
 			}
 		}
-		apply: op.#Apply & {
-			value: {
-				apiVersion: "v1"
-				kind:       "Secret"
-				if parameter.type == _|_ && parameter.kind == "docker-registry" {
-					type: "kubernetes.io/dockerconfigjson"
-				}
-				if parameter.type != _|_ {
-					type: parameter.type
-				}
-				metadata: {
-					name: parameter.secretName
-					if parameter.namespace != _|_ {
-						namespace: parameter.namespace
+		apply: kube.#Apply & {
+			$params: {
+				value: {
+					apiVersion: "v1"
+					kind:       "Secret"
+					if parameter.type == _|_ && parameter.kind == "docker-registry" {
+						type: "kubernetes.io/dockerconfigjson"
 					}
-					if parameter.namespace == _|_ {
-						namespace: context.namespace
+					if parameter.type != _|_ {
+						type: parameter.type
 					}
+					metadata: {
+						name: parameter.secretName
+						if parameter.namespace != _|_ {
+							namespace: parameter.namespace
+						}
+						if parameter.namespace == _|_ {
+							namespace: context.namespace
+						}
+					}
+					stringData: data
 				}
-				stringData: data
+				cluster: parameter.cluster
 			}
-			cluster: parameter.cluster
 		}
 	}
 	parameter: {

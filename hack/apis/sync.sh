@@ -39,8 +39,8 @@ clearRepo() {
         git clone --single-branch --depth 1 https://github.com/kubevela/kubevela-core-api.git kubevela-core-api
     fi
 
-    echo "clear kubevela-core-api api/"
-    rm -r kubevela-core-api/apis/*
+    echo "clear kubevela-core-api apis/"
+    rm -r kubevela-core-api/apis
 
     echo "clear kubevela-core-api pkg/oam"
     rm -r kubevela-core-api/pkg/oam/*
@@ -58,8 +58,8 @@ clearRepo() {
 }
 
 updateRepo() {
-    echo "update kubevela-core-api api/"
-    cp -R kubevela/apis/* kubevela-core-api/apis/
+    echo "update kubevela-core-api apis/"
+    cp -R kubevela/apis kubevela-core-api/apis
 
     echo "update kubevela-core-api pkg/oam"
     cp -R kubevela/pkg/oam/* kubevela-core-api/pkg/oam/
@@ -87,14 +87,25 @@ syncRepo() {
     echo "push to kubevela-core-api"
     if git diff --quiet
     then
-      echo "nothing need to push, finished!"
+      echo "no changes, skip pushing commit"
     else
       git add .
       git commit -m "align with kubevela-$VERSION from commit $COMMIT_ID"
-      git tag "$VERSION"
       git push origin main
-      git push origin "$VERSION"
     fi
+
+    # push new tag anyway
+    # Only tags if VERSION starts with refs/tags/, remove the prefix and push it
+    if [[ "$VERSION" == refs/tags/* ]]; then
+        VERSION=${VERSION#refs/tags/}
+    else
+      echo "VERSION $VERSION is not a tag, skip pushing tag"
+      return
+    fi
+
+    echo "push tag $VERSION"
+    git tag "$VERSION"
+    git push origin "$VERSION"
 }
 
 main() {

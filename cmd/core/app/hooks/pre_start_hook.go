@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/kubevela/pkg/util/compression"
+	"github.com/kubevela/pkg/util/k8s"
 	"github.com/kubevela/pkg/util/singleton"
 	"k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
@@ -55,7 +56,7 @@ func (in *SystemCRDValidationHook) Run(ctx context.Context) error {
 		feature.DefaultMutableFeatureGate.Enabled(features.GzipApplicationRevision) {
 		appRev := &v1beta1.ApplicationRevision{}
 		appRev.Name = fmt.Sprintf("core.pre-check.%d", time.Now().UnixNano())
-		appRev.Namespace = types.DefaultKubeVelaNS
+		appRev.Namespace = k8s.GetRuntimeNamespace()
 		key := client.ObjectKeyFromObject(appRev)
 		appRev.SetLabels(map[string]string{oam.LabelPreCheck: types.VelaCoreName})
 		appRev.Spec.Application.Name = appRev.Name
@@ -72,7 +73,7 @@ func (in *SystemCRDValidationHook) Run(ctx context.Context) error {
 			if err := in.Client.DeleteAllOf(ctx, &v1beta1.ApplicationRevision{},
 				client.InNamespace(types.DefaultKubeVelaNS),
 				client.MatchingLabels{oam.LabelPreCheck: types.VelaCoreName}); err != nil {
-				klog.Errorf("failed to recycle pre-check ApplicationRevision: %w", err)
+				klog.Errorf("failed to recycle pre-check ApplicationRevision: %v", err)
 			}
 		}()
 		if err := in.Client.Get(ctx, key, appRev); err != nil {

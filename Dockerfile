@@ -1,6 +1,6 @@
 ARG BASE_IMAGE
 # Build the manager binary
-FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.19-alpine@sha256:a9b24b67dc83b3383d22a14941c2b2b2ca6a103d805cac6820fd1355943beaf1 as builder
+FROM golang:1.22-alpine3.18 as builder
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -9,7 +9,7 @@ COPY go.sum go.sum
 
 # It's a proxy for CN developer, please unblock it if you have network issue
 ARG GOPROXY
-ENV GOPROXY=${GOPROXY:-https://goproxy.cn}
+ENV GOPROXY=${GOPROXY:-https://proxy.golang.org}
 
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
@@ -34,7 +34,7 @@ RUN GO111MODULE=on CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # You can replace distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 # Overwrite `BASE_IMAGE` by passing `--build-arg=BASE_IMAGE=gcr.io/distroless/static:nonroot`
-FROM ${BASE_IMAGE:-alpine:3.15@sha256:cf34c62ee8eb3fe8aa24c1fab45d7e9d12768d945c3f5a6fd6a63d901e898479}
+FROM ${BASE_IMAGE:-alpine:3.18}
 # This is required by daemon connecting with cri
 RUN apk add --no-cache ca-certificates bash expat
 

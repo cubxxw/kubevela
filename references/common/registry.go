@@ -23,21 +23,17 @@ import (
 
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
-	"github.com/oam-dev/kubevela/pkg/oam/util"
-	"github.com/oam-dev/kubevela/pkg/utils/helm"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
 // InstallComponentDefinition will add a component into K8s cluster and install its controller
-func InstallComponentDefinition(client client.Client, componentData []byte, ioStreams cmdutil.IOStreams, tp *types.Capability) error {
+func InstallComponentDefinition(client client.Client, componentData []byte, ioStreams cmdutil.IOStreams) error {
 	var cd v1beta1.ComponentDefinition
 	var err error
 	if componentData == nil {
@@ -48,22 +44,6 @@ func InstallComponentDefinition(client client.Client, componentData []byte, ioSt
 	}
 	cd.Namespace = types.DefaultKubeVelaNS
 	ioStreams.Info("Installing component: " + cd.Name)
-	if tp.Install != nil {
-		tp.Source.ChartName = tp.Install.Helm.Name
-		if err = helm.InstallHelmChart(ioStreams, tp.Install.Helm); err != nil {
-			return err
-		}
-		err = addSourceIntoExtension(cd.Spec.Extension, tp.Source)
-		if err != nil {
-			return err
-		}
-	}
-	if cd.Spec.Workload.Type == "" {
-		tp.CrdInfo = &types.CRDInfo{
-			APIVersion: cd.Spec.Workload.Definition.APIVersion,
-			Kind:       cd.Spec.Workload.Definition.Kind,
-		}
-	}
 	if err = client.Create(context.Background(), &cd); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
 	}
@@ -71,7 +51,7 @@ func InstallComponentDefinition(client client.Client, componentData []byte, ioSt
 }
 
 // InstallTraitDefinition will add a trait into K8s cluster and install it's controller
-func InstallTraitDefinition(client client.Client, mapper discoverymapper.DiscoveryMapper, traitdata []byte, ioStreams cmdutil.IOStreams, cap *types.Capability) error {
+func InstallTraitDefinition(client client.Client, traitdata []byte, ioStreams cmdutil.IOStreams) error {
 	var td v1beta1.TraitDefinition
 	var err error
 	if err = yaml.Unmarshal(traitdata, &td); err != nil {
@@ -79,51 +59,8 @@ func InstallTraitDefinition(client client.Client, mapper discoverymapper.Discove
 	}
 	td.Namespace = types.DefaultKubeVelaNS
 	ioStreams.Info("Installing trait " + td.Name)
-	if cap.Install != nil {
-		cap.Source.ChartName = cap.Install.Helm.Name
-		if err = helm.InstallHelmChart(ioStreams, cap.Install.Helm); err != nil {
-			return err
-		}
-		err = addSourceIntoExtension(td.Spec.Extension, cap.Source)
-		if err != nil {
-			return err
-		}
-	}
-	if err = HackForStandardTrait(*cap, client); err != nil {
-		return err
-	}
-	gvk, err := util.GetGVKFromDefinition(mapper, td.Spec.Reference)
-	if err != nil {
-		return err
-	}
-	cap.CrdInfo = &types.CRDInfo{
-		APIVersion: v1.GroupVersion{
-			Group:   gvk.Group,
-			Version: gvk.Version,
-		}.String(),
-		Kind: gvk.Kind,
-	}
 	if err = client.Create(context.Background(), &td); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
-	}
-	return nil
-}
-
-// HackForStandardTrait will do some hack install for standard registry
-func HackForStandardTrait(tp types.Capability, client client.Client) error {
-	switch tp.Name {
-	case "metrics":
-		// metrics trait will rely on a Prometheus instance to be installed
-		// make sure the chart is a prometheus operator
-		if tp.Install == nil {
-			break
-		}
-		if tp.Install.Helm.Namespace == "monitoring" && tp.Install.Helm.Name == "kube-prometheus-stack" {
-			if err := InstallPrometheusInstance(client); err != nil {
-				return err
-			}
-		}
-	default:
 	}
 	return nil
 }

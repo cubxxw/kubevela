@@ -47,20 +47,11 @@ const (
 )
 
 // ApplyTerraform deploys addon resources
-func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream util.IOStreams, namespace string, args common.Args) ([]commontypes.ApplicationComponent, error) {
-	dm, err := args.GetDiscoveryMapper()
-	if err != nil {
-		return nil, err
-	}
-	pd, err := args.GetPackageDiscover()
-	if err != nil {
-		return nil, err
-	}
-
+func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream util.IOStreams, namespace string, _ common.Args) ([]commontypes.ApplicationComponent, error) {
 	// TODO(zzxwill) Need to check whether authentication credentials of a specific cloud provider are exported as environment variables, like `ALICLOUD_ACCESS_KEY`
 	var nativeVelaComponents []commontypes.ApplicationComponent
 	// parse template
-	appParser := appfile.NewApplicationParser(k8sClient, dm, pd)
+	appParser := appfile.NewApplicationParser(k8sClient)
 
 	ctx := util2.SetNamespaceInCtx(context.Background(), namespace)
 	appFile, err := appParser.GenerateAppFile(ctx, app)
@@ -75,7 +66,7 @@ func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream 
 		return nil, err
 	}
 
-	for i, wl := range appFile.Workloads {
+	for i, wl := range appFile.ParsedComponents {
 		switch wl.CapabilityCategory {
 		case types.TerraformCategory:
 			name := wl.Name
@@ -195,8 +186,8 @@ func generateSecretFromTerraformOutput(k8sClient client.Client, outputList []str
 }
 
 // getTerraformJSONFiles gets Terraform JSON files or modules from workload
-func getTerraformJSONFiles(wl *appfile.Workload, ctxData process.ContextData) ([]byte, error) {
-	pCtx, err := appfile.PrepareProcessContext(wl, ctxData)
+func getTerraformJSONFiles(comp *appfile.Component, ctxData process.ContextData) ([]byte, error) {
+	pCtx, err := appfile.PrepareProcessContext(comp, ctxData)
 	if err != nil {
 		return nil, err
 	}

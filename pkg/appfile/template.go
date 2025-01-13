@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kubevela/pkg/multicluster"
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,8 +34,6 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -45,7 +45,7 @@ const (
 )
 
 // Template is a helper struct for processing capability including
-// ComponentDefinition, TraitDefinition, ScopeDefinition.
+// ComponentDefinition, TraitDefinition.
 // It mainly collects schematic and status data of a capability definition.
 type Template struct {
 	TemplateStr        string
@@ -53,14 +53,11 @@ type Template struct {
 	CustomStatus       string
 	CapabilityCategory types.CapabilityCategory
 	Reference          common.WorkloadTypeDescriptor
-	Helm               *common.Helm
-	Kube               *common.Kube
 	Terraform          *common.Terraform
 
 	ComponentDefinition *v1beta1.ComponentDefinition
 	WorkloadDefinition  *v1beta1.WorkloadDefinition
 	TraitDefinition     *v1beta1.TraitDefinition
-	ScopeDefinition     *v1beta1.ScopeDefinition
 
 	PolicyDefinition       *v1beta1.PolicyDefinition
 	WorkflowStepDefinition *v1beta1.WorkflowStepDefinition
@@ -69,8 +66,9 @@ type Template struct {
 // LoadTemplate gets the capability definition from cluster and resolve it.
 // It returns a helper struct, Template, which will be used for further
 // processing.
-func LoadTemplate(ctx context.Context, dm discoverymapper.DiscoveryMapper, cli client.Reader, capName string, capType types.CapType) (*Template, error) {
-	// Application Controller only load template from ComponentDefinition and TraitDefinition
+func LoadTemplate(ctx context.Context, cli client.Client, capName string, capType types.CapType) (*Template, error) {
+	ctx = multicluster.WithCluster(ctx, multicluster.Local)
+	// Application Controller only loads template from ComponentDefinition and TraitDefinition
 	switch capType {
 	case types.TypeComponentDefinition, types.TypeWorkload:
 		cd := new(v1beta1.ComponentDefinition)
@@ -85,7 +83,7 @@ func LoadTemplate(ctx context.Context, dm discoverymapper.DiscoveryMapper, cli c
 				if err != nil {
 					return nil, err
 				}
-				gvk, err := oamutil.GetGVKFromDefinition(dm, wd.Spec.Reference)
+				gvk, err := oamutil.GetGVKFromDefinition(cli.RESTMapper(), wd.Spec.Reference)
 				if err != nil {
 					return nil, errors.WithMessagef(err, "get group version kind from component definition [%s]", capName)
 				}
@@ -141,14 +139,12 @@ func LoadTemplate(ctx context.Context, dm discoverymapper.DiscoveryMapper, cli c
 			return nil, err
 		}
 		return tmpl, nil
-	case types.TypeScope:
-		// TODO: add scope template support
 	}
 	return nil, fmt.Errorf("kind(%s) of %s not supported", capType, capName)
 }
 
 // LoadTemplateFromRevision will load Definition template from app revision
-func LoadTemplateFromRevision(capName string, capType types.CapType, apprev *v1beta1.ApplicationRevision, dm discoverymapper.DiscoveryMapper) (*Template, error) {
+func LoadTemplateFromRevision(capName string, capType types.CapType, apprev *v1beta1.ApplicationRevision, mapper meta.RESTMapper) (*Template, error) {
 	if apprev == nil {
 		return nil, errors.Errorf("fail to find template for %s as app revision is empty", capName)
 	}
@@ -165,7 +161,7 @@ func LoadTemplateFromRevision(capName string, capType types.CapType, apprev *v1b
 			if err != nil {
 				return nil, err
 			}
-			gvk, err := oamutil.GetGVKFromDefinition(dm, wd.Spec.Reference)
+			gvk, err := oamutil.GetGVKFromDefinition(mapper, wd.Spec.Reference)
 			if err != nil {
 				return nil, errors.WithMessagef(err, "Get group version kind from component definition [%s]", capName)
 			}
@@ -216,19 +212,14 @@ func LoadTemplateFromRevision(capName string, capType types.CapType, apprev *v1b
 			return nil, err
 		}
 		return tmpl, nil
-	case types.TypeScope:
-		s, ok := apprev.Spec.ScopeDefinitions[capName]
-		if !ok {
-			return nil, errors.Errorf("ScopeDefinition [%s] not found in app revision %s", capName, apprev.Name)
-		}
-		tmpl, err := newTemplateOfScopeDefinition(s.DeepCopy())
-		if err != nil {
-			return nil, err
-		}
-		return tmpl, nil
 	default:
 		return nil, fmt.Errorf("kind(%s) of %s not supported", capType, capName)
 	}
+}
+
+// IsNotFoundInAppRevision check if the error is `not found in app revision`
+func IsNotFoundInAppRevision(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found in app revision")
 }
 
 func verifyRevisionName(capName string, capType types.CapType, apprev *v1beta1.ApplicationRevision) string {
@@ -245,8 +236,6 @@ func verifyRevisionName(capName string, capType types.CapType, apprev *v1beta1.A
 			_, ok = apprev.Spec.PolicyDefinitions[splitName]
 		case types.TypeWorkflowStep:
 			_, ok = apprev.Spec.WorkflowStepDefinitions[splitName]
-		case types.TypeScope:
-			_, ok = apprev.Spec.ScopeDefinitions[splitName]
 		default:
 			return capName
 		}
@@ -262,41 +251,38 @@ func verifyRevisionName(capName string, capType types.CapType, apprev *v1beta1.A
 // DryRunTemplateLoader return a function that do the same work as
 // LoadTemplate, but load template from provided ones before loading from
 // cluster through LoadTemplate
-func DryRunTemplateLoader(defs []oam.Object) TemplateLoaderFn {
-	return func(ctx context.Context, dm discoverymapper.DiscoveryMapper, r client.Reader, capName string, capType types.CapType) (*Template, error) {
+func DryRunTemplateLoader(defs []*unstructured.Unstructured) TemplateLoaderFn {
+	return func(ctx context.Context, r client.Client, capName string, capType types.CapType) (*Template, error) {
 		// retrieve provided cap definitions
 		for _, def := range defs {
-			if unstructDef, ok := def.(*unstructured.Unstructured); ok {
-				if unstructDef.GetKind() == v1beta1.ComponentDefinitionKind &&
-					capType == types.TypeComponentDefinition && unstructDef.GetName() == capName {
-					compDef := &v1beta1.ComponentDefinition{}
-					if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructDef.Object, compDef); err != nil {
-						return nil, errors.Wrap(err, "invalid component definition")
-					}
-					tmpl, err := newTemplateOfCompDefinition(compDef)
-					if err != nil {
-						return nil, errors.WithMessagef(err, "cannot load template of component definition %q", capName)
-					}
-					return tmpl, nil
+			if def.GetKind() == v1beta1.ComponentDefinitionKind &&
+				capType == types.TypeComponentDefinition && def.GetName() == capName {
+				compDef := &v1beta1.ComponentDefinition{}
+				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, compDef); err != nil {
+					return nil, errors.Wrap(err, "invalid component definition")
 				}
-				if unstructDef.GetKind() == v1beta1.TraitDefinitionKind &&
-					capType == types.TypeTrait && unstructDef.GetName() == capName {
-					traitDef := &v1beta1.TraitDefinition{}
-					if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructDef.Object, traitDef); err != nil {
-						return nil, errors.Wrap(err, "invalid trait definition")
-					}
-					tmpl, err := newTemplateOfTraitDefinition(traitDef)
-					if err != nil {
-						return nil, errors.WithMessagef(err, "cannot load template of trait definition %q", capName)
-					}
-					return tmpl, nil
+				tmpl, err := newTemplateOfCompDefinition(compDef)
+				if err != nil {
+					return nil, errors.WithMessagef(err, "cannot load template of component definition %q", capName)
 				}
-				// TODO(roywang) add support for ScopeDefinition
+				return tmpl, nil
+			}
+			if def.GetKind() == v1beta1.TraitDefinitionKind &&
+				capType == types.TypeTrait && def.GetName() == capName {
+				traitDef := &v1beta1.TraitDefinition{}
+				if err := runtime.DefaultUnstructuredConverter.FromUnstructured(def.Object, traitDef); err != nil {
+					return nil, errors.Wrap(err, "invalid trait definition")
+				}
+				tmpl, err := newTemplateOfTraitDefinition(traitDef)
+				if err != nil {
+					return nil, errors.WithMessagef(err, "cannot load template of trait definition %q", capName)
+				}
+				return tmpl, nil
 			}
 		}
 		// not found in provided cap definitions
 		// then try to retrieve from cluster
-		tmpl, err := LoadTemplate(ctx, dm, r, capName, capType)
+		tmpl, err := LoadTemplate(ctx, r, capName, capType)
 		if err != nil {
 			return nil, errors.WithMessagef(err, "cannot load template %q from cluster and provided ones", capName)
 		}
@@ -359,16 +345,6 @@ func newTemplateOfWorkflowStepDefinition(def *v1beta1.WorkflowStepDefinition) (*
 	return tmpl, nil
 }
 
-func newTemplateOfScopeDefinition(def *v1beta1.ScopeDefinition) (*Template, error) {
-	tmpl := &Template{
-		ScopeDefinition: def,
-	}
-	if err := loadSchematicToTemplate(tmpl, nil, nil, def.Spec.Extension); err != nil {
-		return nil, errors.WithMessage(err, "cannot load template")
-	}
-	return tmpl, nil
-}
-
 // loadSchematicToTemplate loads common data that all kind definitions have.
 func loadSchematicToTemplate(tmpl *Template, status *common.Status, schematic *common.Schematic, ext *runtime.RawExtension) error {
 	if status != nil {
@@ -380,16 +356,6 @@ func loadSchematicToTemplate(tmpl *Template, status *common.Status, schematic *c
 		if schematic.CUE != nil {
 			tmpl.CapabilityCategory = types.CUECategory
 			tmpl.TemplateStr = schematic.CUE.Template
-		}
-		if schematic.HELM != nil {
-			tmpl.CapabilityCategory = types.HelmCategory
-			tmpl.Helm = schematic.HELM
-			return nil
-		}
-		if schematic.KUBE != nil {
-			tmpl.CapabilityCategory = types.KubeCategory
-			tmpl.Kube = schematic.KUBE
-			return nil
 		}
 		if schematic.Terraform != nil {
 			tmpl.CapabilityCategory = types.TerraformCategory

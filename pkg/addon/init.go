@@ -196,9 +196,13 @@ func (cmd *InitCmd) createHelmComponent() error {
 	tmpl := helmComponentTmpl{}
 	tmpl.Type = "helm"
 	tmpl.Properties.RepoType = "helm"
+	if strings.HasPrefix(cmd.HelmRepoURL, "oci") {
+		tmpl.Properties.RepoType = "oci"
+	}
 	tmpl.Properties.URL = cmd.HelmRepoURL
 	tmpl.Properties.Chart = cmd.HelmChartName
 	tmpl.Properties.Version = cmd.HelmChartVersion
+	tmpl.Name = "addon-" + cmd.AddonName
 
 	str, err := toCUEResourceString(tmpl)
 	if err != nil {
@@ -383,6 +387,7 @@ func (cmd *InitCmd) writeFiles() error {
 
 // helmComponentTmpl is a template for a helm component .cue in an addon
 type helmComponentTmpl struct {
+	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Properties struct {
 		RepoType string `json:"repoType"`
@@ -411,7 +416,7 @@ const (
 // used to query status of any extended resources in application-level.
 // Reference: https://kubevela.net/docs/platform-engineers/system-operation/velaql
 //
-// This VelaQL View querys the status of this addon.
+// This VelaQL View queries the status of this addon.
 // Use this view to query by:
 //     vela ql --query 'my-view{addonName:ADDON_NAME}.status'
 // You should see 'running'.

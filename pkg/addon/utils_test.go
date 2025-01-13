@@ -17,18 +17,17 @@ limitations under the License.
 package addon
 
 import (
-	"net/http/httptest"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
 	"helm.sh/helm/v3/pkg/chartutil"
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
@@ -116,29 +115,6 @@ var _ = Describe("Test definition check", func() {
 		usedApps, err := checkAddonHasBeenUsed(ctx, k8sClient, "my-addon", addonApp, cfg)
 		Expect(err).Should(BeNil())
 		Expect(len(usedApps)).Should(BeEquivalentTo(4))
-	})
-
-	It("check fetch lagacy addon definitions", func() {
-		res := make(map[string]bool)
-
-		server := httptest.NewServer(ossHandler)
-		defer server.Close()
-
-		url := server.URL
-		cmYaml := strings.ReplaceAll(registryCmYaml, "TEST_SERVER_URL", url)
-		cm := v1.ConfigMap{}
-		Expect(yaml.Unmarshal([]byte(cmYaml), &cm)).Should(BeNil())
-		err := k8sClient.Create(ctx, &cm)
-		if apierrors.IsAlreadyExists(err) {
-			Expect(k8sClient.Update(ctx, &cm)).To(Succeed())
-		} else {
-			Expect(err).To(Succeed())
-		}
-
-		disableTestAddonApp := v1beta1.Application{}
-		Expect(yaml.Unmarshal([]byte(addonDisableTestAppYaml), &disableTestAddonApp)).Should(BeNil())
-		Expect(findLegacyAddonDefs(ctx, k8sClient, "test-disable-addon", disableTestAddonApp.GetLabels()[oam.LabelAddonRegistry], cfg, res)).Should(BeNil())
-		Expect(len(res)).Should(BeEquivalentTo(2))
 	})
 })
 
@@ -399,6 +375,30 @@ func TestFilterDependencyRegistries(t *testing.T) {
 		res := FilterDependencyRegistries(testCase.index, testCase.registries)
 		assert.Equal(t, res, testCase.res)
 		assert.Equal(t, testCase.registries, testCase.origin)
+	}
+}
+
+func TestCheckAddonPackageValid(t *testing.T) {
+	testCases := []struct {
+		testCase Meta
+		err      error
+	}{{
+		testCase: Meta{},
+		err:      fmt.Errorf("the addon package doesn't have `metadata.yaml`"),
+	}, {
+		testCase: Meta{Version: "v1.4.0"},
+		err:      fmt.Errorf("`matadata.yaml` must define the name of addon"),
+	}, {
+		testCase: Meta{Name: "test-addon"},
+		err:      fmt.Errorf("`matadata.yaml` must define the version of addon"),
+	}, {
+		testCase: Meta{Name: "test-addon", Version: "1.4.5"},
+		err:      nil,
+	},
+	}
+	for _, testCase := range testCases {
+		err := validateAddonPackage(&InstallPackage{Meta: testCase.testCase})
+		assert.Equal(t, reflect.DeepEqual(err, testCase.err), true)
 	}
 }
 

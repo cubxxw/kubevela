@@ -21,21 +21,27 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
 func TestInfo(t *testing.T) {
 	testEnv := &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute * 3,
 		ControlPlaneStopTimeout:  time.Minute,
-		UseExistingCluster:       pointer.BoolPtr(false),
+		UseExistingCluster:       ptr.To(false),
 	}
 	cfg, err := testEnv.Start()
 	assert.NoError(t, err)
 
+	k8sClient, err := client.New(cfg, client.Options{Scheme: common.Scheme})
+	assert.NoError(t, err)
+
 	info := NewInfo(&themeConfig)
-	info.Init(cfg)
+	info.Init(k8sClient, cfg)
 
 	assert.Equal(t, info.GetColumnCount(), 7)
 	assert.Equal(t, info.GetRowCount(), 6)

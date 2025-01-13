@@ -127,11 +127,11 @@ func (opt *DeleteOptions) DeleteApp(f velacmd.Factory, cmd *cobra.Command, app *
 
 	if !opt.AssumeYes {
 		if !NewUserInput().AskBool(fmt.Sprintf("Are you sure to delete the application %s/%s", app.Namespace, app.Name), &UserInputOptions{opt.AssumeYes}) {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "skip deleting appplication %s/%s\n", app.Namespace, app.Name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "skip deleting application %s/%s\n", app.Namespace, app.Name)
 			return nil
 		}
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Start deleting appplication %s/%s\n", app.Namespace, app.Name)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Start deleting application %s/%s\n", app.Namespace, app.Name)
 
 	// orphan app
 	if opt.Orphan {
@@ -164,7 +164,7 @@ func (opt *DeleteOptions) DeleteApp(f velacmd.Factory, cmd *cobra.Command, app *
 		}
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Delete appplication %s/%s succeeded\n", app.Namespace, app.Name)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Delete application %s/%s succeeded\n", app.Namespace, app.Name)
 	return nil
 }
 
@@ -179,7 +179,7 @@ func (opt *DeleteOptions) orphan(ctx context.Context, f velacmd.Factory, app *v1
 }
 
 func (opt *DeleteOptions) forceDelete(ctx context.Context, f velacmd.Factory, app *v1beta1.Application) error {
-	return wait.PollImmediate(3*time.Second, 1*time.Minute, func() (done bool, err error) {
+	return wait.PollUntilContextTimeout(ctx, 3*time.Second, 1*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		err = f.Client().Get(ctx, client.ObjectKeyFromObject(app), app)
 		if kerrors.IsNotFound(err) {
 			return true, nil
@@ -293,7 +293,7 @@ func (opt *DeleteOptions) wait(ctx context.Context, f velacmd.Factory, app *v1be
 	spinner := newTrackingSpinnerWithDelay(fmt.Sprintf("deleting application %s/%s", app.Namespace, app.Name), time.Second)
 	spinner.Start()
 	defer spinner.Stop()
-	return wait.PollImmediate(2*time.Second, 5*time.Minute, func() (done bool, err error) {
+	return wait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		var msg string
 		done, msg, err = opt.getDeletingStatus(ctx, f, client.ObjectKeyFromObject(app))
 		applySpinnerNewSuffix(spinner, msg)
@@ -307,7 +307,7 @@ func (opt *DeleteOptions) Run(f velacmd.Factory, cmd *cobra.Command) error {
 		app := &v1beta1.Application{}
 		if err := f.Client().Get(cmd.Context(), apitypes.NamespacedName{Namespace: opt.Namespace, Name: appName}, app); err != nil {
 			if kerrors.IsNotFound(err) {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "application %s/%s already deleted", opt.Namespace, appName)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "application %s/%s already deleted\n", opt.Namespace, appName)
 				return nil
 			}
 			return fmt.Errorf("failed to get application %s/%s: %w", opt.Namespace, appName, err)
@@ -330,7 +330,7 @@ var (
 		that you can use to configure customized recycle rules.
 
 		This command supports delete application in various modes.
-		Natively, you can use it like "kubectl delete app <app-name>". 
+		Natively, you can use it like "kubectl delete app [app-name]". 
 		In the cases you only want to delete the application but leave the 
 		resources there, you can use the --orphan parameter.
 		In the cases the server-side controller is uninstalled, or you want to
@@ -373,12 +373,12 @@ func NewDeleteCommand(f velacmd.Factory, order string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   "delete",
 		DisableFlagsInUseLine: true,
-		Short:                 i18n.T("Delete an application"),
+		Short:                 i18n.T("Delete an application."),
 		Long:                  deleteLong,
 		Example:               deleteExample,
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
-			types.TagCommandType:  types.TypeApp,
+			types.TagCommandType:  types.TypeStart,
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))

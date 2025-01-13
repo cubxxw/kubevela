@@ -27,11 +27,15 @@ import (
 	"testing"
 	"time"
 
+	cuexv1alpha1 "github.com/kubevela/pkg/apis/cue/v1alpha1"
+	"github.com/kubevela/pkg/util/singleton"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
@@ -50,7 +54,17 @@ const (
 
 func initArgs() common2.Args {
 	arg := common2.Args{}
-	arg.SetClient(fake.NewClientBuilder().WithScheme(common2.Scheme).Build())
+	scheme := common2.Scheme
+	cuexv1alpha1.AddToScheme(scheme)
+	arg.SetClient(fake.NewClientBuilder().
+		WithScheme(common2.Scheme).
+		WithStatusSubresource(
+			&v1beta1.Application{},
+		).
+		Build())
+	fakeDynamicClient := dynamicfake.NewSimpleDynamicClient(scheme)
+	singleton.DynamicClient.Set(fakeDynamicClient)
+
 	return arg
 }
 
@@ -458,9 +472,9 @@ func TestNewDefinitionGetCommand(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestNewDefinitionGenDocCommand(t *testing.T) {
+func TestNewDefinitionDocGenCommand(t *testing.T) {
 	c := initArgs()
-	cmd := NewDefinitionGenDocCommand(c, util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
+	cmd := NewDefinitionDocGenCommand(c, util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
 	assert.NotNil(t, cmd.Execute())
 
 	cmd.SetArgs([]string{"alibaba-xxxxxxx"})
@@ -612,8 +626,14 @@ func TestNewDefinitionVetCommand(t *testing.T) {
 	cmd := NewDefinitionValidateCommand(c)
 	initCommand(cmd)
 	_, traitFilename := createLocalTrait(t)
+	_, traitFilename2 := createLocalTrait(t)
+	_, traitFilename3 := createLocalTrait(t)
 	defer removeFile(traitFilename, t)
 	cmd.SetArgs([]string{traitFilename})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing vet command: %v", err)
+	}
+	cmd.SetArgs([]string{traitFilename, traitFilename2, traitFilename3})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpeced error when executing vet command: %v", err)
 	}
@@ -628,4 +648,67 @@ func TestNewDefinitionVetCommand(t *testing.T) {
 	if err = cmd.Execute(); err == nil {
 		t.Fatalf("expect validation failed but error not found")
 	}
+	cmd.SetArgs([]string{traitFilename, traitFilename2, traitFilename3})
+	if err = cmd.Execute(); err == nil {
+		t.Fatalf("expect validation failed but error not found")
+	}
+	cmd.SetArgs([]string{"./test-data/defvet"})
+	if err = cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing vet command: %v", err)
+	}
+}
+
+func TestNewDefinitionGenAPICommand(t *testing.T) {
+	c := initArgs()
+	cmd := NewDefinitionGenAPICommand(c)
+	initCommand(cmd)
+	internalDefPath := "../../vela-templates/definitions/internal/"
+
+	cmd.SetArgs([]string{"-f", internalDefPath, "-o", "../vela-sdk-gen", "--init", "--verbose"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing genapi command: %v", err)
+	}
+}
+
+// re-use the provider testdata
+const providerTestDataPath = "../cuegen/generators/provider/testdata"
+
+func TestNewDefinitionGenCUECommand(t *testing.T) {
+	c := initArgs()
+	got := bytes.NewBuffer(nil)
+	cmd := NewDefinitionGenCUECommand(c, util.IOStreams{Out: got})
+	initCommand(cmd)
+
+	cmd.SetArgs([]string{
+		"-t", genTypeProvider,
+		"--types", "*k8s.io/apimachinery/pkg/apis/meta/v1/unstructured.Unstructured=ellipsis",
+		"--types", "*k8s.io/apimachinery/pkg/apis/meta/v1/unstructured.UnstructuredList=ellipsis",
+		filepath.Join(providerTestDataPath, "valid.go"),
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	expected, err := os.ReadFile(filepath.Join(providerTestDataPath, "valid.cue"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expected), got.String())
+}
+
+func TestNewDefinitionGenDocCommand(t *testing.T) {
+	c := initArgs()
+	got := bytes.NewBuffer(nil)
+	cmd := NewDefinitionGenDocCommand(c, util.IOStreams{Out: got})
+	initCommand(cmd)
+
+	cmd.SetArgs([]string{
+		"-t", genTypeProvider,
+		filepath.Join(providerTestDataPath, "valid.cue"),
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	expected, err := os.ReadFile(filepath.Join(providerTestDataPath, "valid.md"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expected), got.String())
 }

@@ -1,6 +1,8 @@
 "apply-component": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "Application Delivery"
+	}
 	labels: {
 		"scope": "Application"
 	}
@@ -12,5 +14,7 @@ template: {
 		component: string
 		// +usage=Specify the cluster
 		cluster: *"" | string
+		// +usage=Specify the namespace
+		namespace: *"" | string
 	}
 }

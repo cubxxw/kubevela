@@ -33,7 +33,6 @@ import (
 	"github.com/oam-dev/kubevela/pkg/resourcetracker"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	velaerrors "github.com/oam-dev/kubevela/pkg/utils/errors"
-	"github.com/oam-dev/kubevela/pkg/utils/parallel"
 )
 
 // MaxDispatchConcurrent is the max dispatch concurrent number
@@ -86,10 +85,7 @@ func (h *resourceKeeper) Dispatch(ctx context.Context, manifests []*unstructured
 		return err
 	}
 	// 3. apply manifests
-	if err = h.dispatch(ctx, manifests, opts); err != nil {
-		return err
-	}
-	return nil
+	return h.dispatch(ctx, manifests, opts)
 }
 
 func (h *resourceKeeper) record(ctx context.Context, manifests []*unstructured.Unstructured, options ...DispatchOption) error {
@@ -145,7 +141,7 @@ func (h *resourceKeeper) record(ctx context.Context, manifests []*unstructured.U
 }
 
 func (h *resourceKeeper) dispatch(ctx context.Context, manifests []*unstructured.Unstructured, applyOpts []apply.ApplyOption) error {
-	errs := parallel.Run(func(manifest *unstructured.Unstructured) error {
+	errs := velaslices.ParMap(manifests, func(manifest *unstructured.Unstructured) error {
 		applyCtx := multicluster.ContextWithClusterName(ctx, oam.GetCluster(manifest))
 		applyCtx = auth.ContextWithUserInfo(applyCtx, h.app)
 		ao := applyOpts
@@ -158,11 +154,14 @@ func (h *resourceKeeper) dispatch(ctx context.Context, manifests []*unstructured
 		if h.canTakeOver(manifest) {
 			ao = append([]apply.ApplyOption{apply.TakeOver()}, ao...)
 		}
+		if strategy := h.getUpdateStrategy(manifest); strategy != nil {
+			ao = append([]apply.ApplyOption{apply.WithUpdateStrategy(*strategy)}, ao...)
+		}
 		manifest, err := ApplyStrategies(applyCtx, h, manifest, v1alpha1.ApplyOnceStrategyOnAppUpdate)
 		if err != nil {
 			return errors.Wrapf(err, "failed to apply once policy for application %s,%s", h.app.Name, err.Error())
 		}
 		return h.applicator.Apply(applyCtx, manifest, ao...)
-	}, manifests, MaxDispatchConcurrent)
-	return velaerrors.AggregateErrors(errs.([]error))
+	}, velaslices.Parallelism(MaxDispatchConcurrent))
+	return velaerrors.AggregateErrors(errs)
 }

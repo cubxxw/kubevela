@@ -24,20 +24,21 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile/dryrun"
-	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
 // LiveDiffCmdOptions contains the live-diff cmd options
 type LiveDiffCmdOptions struct {
-	DryRunCmdOptions
+	cmdutil.IOStreams
+	ApplicationFile   string
+	DefinitionFile    string
 	AppName           string
 	Namespace         string
 	Revision          string
@@ -47,15 +48,13 @@ type LiveDiffCmdOptions struct {
 
 // NewLiveDiffCommand creates `live-diff` command
 func NewLiveDiffCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
-	o := &LiveDiffCmdOptions{
-		DryRunCmdOptions: DryRunCmdOptions{
-			IOStreams: ioStreams,
-		}}
+	o := &LiveDiffCmdOptions{IOStreams: ioStreams}
+
 	cmd := &cobra.Command{
 		Use:                   "live-diff",
 		DisableFlagsInUseLine: true,
-		Short:                 "Compare application and revisions",
-		Long:                  "Compare application and revisions",
+		Short:                 "Compare application and revisions.",
+		Long:                  "Compare application and revisions.",
 		Example: "# compare the current application and the running revision\n" +
 			"> vela live-diff my-app\n" +
 			"# compare the current application and the specified revision\n" +
@@ -102,26 +101,18 @@ func LiveDiffApplication(cmdOption *LiveDiffCmdOptions, c common.Args) (bytes.Bu
 	if err != nil {
 		return buff, err
 	}
-	objs := []oam.Object{}
+	var objs []*unstructured.Unstructured
 	if cmdOption.DefinitionFile != "" {
-		objs, err = ReadDefinitionsFromFile(cmdOption.DefinitionFile)
+		objs, err = ReadDefinitionsFromFile(cmdOption.DefinitionFile, cmdOption.IOStreams)
 		if err != nil {
 			return buff, err
 		}
-	}
-	pd, err := c.GetPackageDiscover()
-	if err != nil {
-		return buff, err
 	}
 	config, err := c.GetConfig()
 	if err != nil {
 		return buff, err
 	}
-	dm, err := discoverymapper.New(config)
-	if err != nil {
-		return buff, err
-	}
-	liveDiffOption := dryrun.NewLiveDiffOption(newClient, config, dm, pd, objs)
+	liveDiffOption := dryrun.NewLiveDiffOption(newClient, config, objs)
 	if cmdOption.ApplicationFile == "" {
 		return cmdOption.renderlessDiff(newClient, liveDiffOption)
 	}

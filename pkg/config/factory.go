@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"cuelang.org/go/cue"
 	"github.com/getkin/kin-openapi/openapi3"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,13 +43,12 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/apiserver/domain/model"
-	"github.com/oam-dev/kubevela/pkg/apiserver/utils"
 	icontext "github.com/oam-dev/kubevela/pkg/config/context"
 	"github.com/oam-dev/kubevela/pkg/config/writer"
-	"github.com/oam-dev/kubevela/pkg/cue"
+	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	"github.com/oam-dev/kubevela/pkg/cue/script"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 )
 
@@ -70,23 +70,38 @@ const SaveTemplateKey = "template"
 // TemplateConfigMapNamePrefix the prefix of the configmap name.
 const TemplateConfigMapNamePrefix = "config-template-"
 
+// TemplateValidationReturns define the key name for the config-template validation returns
+const TemplateValidationReturns = SaveTemplateKey + ".validation.$returns"
+
+// TemplateOutput define the key name for the config-template output
+const TemplateOutput = SaveTemplateKey + ".output"
+
+// TemplateOutputs define the key name for the config-template outputs
+const TemplateOutputs = SaveTemplateKey + ".outputs"
+
 // ErrSensitiveConfig means this config can not be read directly.
 var ErrSensitiveConfig = errors.New("the config is sensitive")
 
 // ErrNoConfigOrTarget means the config or the target is empty.
 var ErrNoConfigOrTarget = errors.New("you must specify the config name and destination to distribute")
 
-// ErrNotFoundDistribution means the app of the distribution is not exist.
-var ErrNotFoundDistribution = errors.New("the distribution is not found")
+// ErrNotFoundDistribution means the app of the distribution does not exist.
+var ErrNotFoundDistribution = errors.New("the distribution does not found")
 
-// ErrConfigExist means the config is exist.
-var ErrConfigExist = errors.New("the config is exist")
+// ErrConfigExist means the config does exist.
+var ErrConfigExist = errors.New("the config does exist")
 
-// ErrConfigNotFound means the config is not exist
-var ErrConfigNotFound = errors.New("the config is not exist")
+// ErrConfigNotFound means the config does not exist
+var ErrConfigNotFound = errors.New("the config does not exist")
 
-// ErrTemplateNotFound means the template is not exist
-var ErrTemplateNotFound = errors.New("the template is not exist")
+// ErrTemplateNotFound means the template does not exist
+var ErrTemplateNotFound = errors.New("the template does not exist")
+
+// ErrChangeTemplate means the template of the config can not be changed
+var ErrChangeTemplate = errors.New("the template of the config can not be changed")
+
+// ErrChangeSecretType means the secret type of the config can not be changed
+var ErrChangeSecretType = errors.New("the secret type of the config can not be changed")
 
 // NamespacedName the namespace and name model
 type NamespacedName struct {
@@ -103,7 +118,7 @@ type Template struct {
 	// System: The system users could use this template, and the config secret will save in the vela-system namespace.
 	// Namespace: The config secret will save in the target namespace, such as this namespace belonging to one project.
 	Scope string `json:"scope"`
-	// Sensitive means this config config can not be read from the API or the workflow step, only support the safe way, such as Secret.
+	// Sensitive means this config can not be read from the API or the workflow step, only support the safe way, such as Secret.
 	Sensitive bool `json:"sensitive"`
 
 	CreateTime time.Time `json:"createTime"`
@@ -123,6 +138,15 @@ type Metadata struct {
 	Alias       string                 `json:"alias,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	Properties  map[string]interface{} `json:"properties"`
+}
+
+// TemplateMetadata This is the metadata of the config template
+type TemplateMetadata struct {
+	Name        string `json:"name"`
+	Alias       string `json:"alias,omitempty"`
+	Description string `json:"description,omitempty"`
+	Sensitive   bool   `json:"sensitive,omitempty"`
+	Scope       string `json:"scope,omitempty"`
 }
 
 // Config this is the config model, generated from the template and properties.
@@ -173,13 +197,24 @@ type Distribution struct {
 
 // CreateDistributionSpec the spec of the distribution
 type CreateDistributionSpec struct {
-	Configs []*NamespacedName
-	Targets []*ClusterTarget
+	Configs []*NamespacedName `json:"configs"`
+	Targets []*ClusterTarget  `json:"targets"`
+}
+
+// Validation the response of the validation
+type Validation struct {
+	Result  bool   `json:"result"`
+	Message string `json:"message"`
+}
+
+// Error return the error message
+func (e *Validation) Error() string {
+	return fmt.Sprintf("failed to validate config: %s", e.Message)
 }
 
 // Factory handle the config
 type Factory interface {
-	ParseTemplate(defaultName string, content []byte) (*Template, error)
+	ParseTemplate(ctx context.Context, defaultName string, content []byte) (*Template, error)
 	ParseConfig(ctx context.Context, template NamespacedName, meta Metadata) (*Config, error)
 
 	LoadTemplate(ctx context.Context, name, ns string) (*Template, error)
@@ -192,6 +227,7 @@ type Factory interface {
 	ListConfigs(ctx context.Context, namespace, template, scope string, withStatus bool) ([]*Config, error)
 	DeleteConfig(ctx context.Context, namespace, name string) error
 	CreateOrUpdateConfig(ctx context.Context, i *Config, ns string) error
+	IsExist(ctx context.Context, namespace, name string) (bool, error)
 
 	CreateOrUpdateDistribution(ctx context.Context, ns, name string, ads *CreateDistributionSpec) error
 	ListDistributions(ctx context.Context, ns string) ([]*Distribution, error)
@@ -199,60 +235,74 @@ type Factory interface {
 	MergeDistributionStatus(ctx context.Context, config *Config, namespace string) error
 }
 
+// Dispatcher is a client for apply resources.
+type Dispatcher func(context.Context, []*unstructured.Unstructured, []apply.ApplyOption) error
+
 // NewConfigFactory create a config factory instance
 func NewConfigFactory(cli client.Client) Factory {
-	return &kubeConfigFactory{cli: cli, apiApply: apply.NewAPIApplicator(cli)}
+	return &kubeConfigFactory{cli: cli, apiApply: defaultDispatcher(cli)}
+}
+
+// NewConfigFactoryWithDispatcher create a config factory instance with a specified dispatcher
+func NewConfigFactoryWithDispatcher(cli client.Client, ds Dispatcher) Factory {
+	if ds == nil {
+		ds = defaultDispatcher(cli)
+	}
+	return &kubeConfigFactory{cli: cli, apiApply: ds}
+}
+
+func defaultDispatcher(cli client.Client) Dispatcher {
+	api := apply.NewAPIApplicator(cli)
+	return func(ctx context.Context, manifests []*unstructured.Unstructured, ao []apply.ApplyOption) error {
+		for _, m := range manifests {
+			if err := api.Apply(ctx, m, ao...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 type kubeConfigFactory struct {
 	cli      client.Client
-	apiApply *apply.APIApplicator
+	apiApply Dispatcher
 }
 
 // ParseTemplate parse a config template instance form the cue script
-func (k *kubeConfigFactory) ParseTemplate(defaultName string, content []byte) (*Template, error) {
+func (k *kubeConfigFactory) ParseTemplate(ctx context.Context, defaultName string, content []byte) (*Template, error) {
 	cueScript := script.BuildCUEScriptWithDefaultContext(icontext.DefaultContext, content)
-	value, err := cueScript.ParseToTemplateValue()
+	value, err := cueScript.ParseToTemplateValueWithCueX(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("the cue script is invalid:%w", err)
 	}
-	name, err := value.GetString("metadata", "name")
-	if err != nil {
-		if defaultName == "" {
-			return nil, fmt.Errorf("fail to get the name from the template metadata: %w", err)
-		}
+	// Render the metadata
+	tm := TemplateMetadata{}
+	metadata := value.LookupPath(cue.ParsePath("metadata"))
+	if !metadata.Exists() && defaultName == "" {
+		return nil, fmt.Errorf("failed to lookup value: var(path=metadata) not exist")
+	}
+	if err := metadata.Decode(&tm); err != nil {
+		return nil, fmt.Errorf("failed to decode the template metadata: %w", err)
 	}
 	if defaultName != "" {
-		name = defaultName
+		tm.Name = defaultName
 	}
 
-	templateValue, err := value.LookupValue("template")
-	if err != nil {
-		return nil, err
+	templateValue := value.LookupPath(cue.ParsePath("template"))
+	if !templateValue.Exists() {
+		return nil, fmt.Errorf("failed to lookup value: var(path=template) not exist")
 	}
-	schema, err := cueScript.ParsePropertiesToSchema("template")
+	schema, err := cueScript.ParsePropertiesToSchemaWithCueX(ctx, "template")
 	if err != nil {
 		return nil, fmt.Errorf("the properties of the cue script is invalid:%w", err)
 	}
-	alias, err := value.GetString("metadata", "alias")
-	if err != nil && !IsFieldNotExist(err) {
-		klog.Warningf("fail to get the alias from the template metadata: %s", err.Error())
-	}
-	scope, err := value.GetString("metadata", "scope")
-	if err != nil && !IsFieldNotExist(err) {
-		klog.Warningf("fail to get the scope from the template metadata: %s", err.Error())
-	}
-	sensitive, err := value.GetBool("metadata", "sensitive")
-	if err != nil && !IsFieldNotExist(err) {
-		klog.Warningf("fail to get the sensitive from the template metadata: %s", err.Error())
-	}
 	template := &Template{
 		NamespacedName: NamespacedName{
-			Name: name,
+			Name: tm.Name,
 		},
-		Alias:          alias,
-		Scope:          scope,
-		Sensitive:      sensitive,
+		Alias:          tm.Alias,
+		Scope:          tm.Scope,
+		Sensitive:      tm.Sensitive,
 		Template:       cueScript,
 		Schema:         schema,
 		ExpandedWriter: writer.ParseExpandedWriterConfig(templateValue),
@@ -300,7 +350,14 @@ func (k *kubeConfigFactory) CreateOrUpdateConfigTemplate(ctx context.Context, ns
 	if ns != "" {
 		it.ConfigMap.Namespace = ns
 	}
-	return k.apiApply.Apply(ctx, it.ConfigMap, apply.DisableUpdateAnnotation(), apply.Quiet())
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(it.ConfigMap)
+	if err != nil {
+		return fmt.Errorf("fail to convert configmap to unstructured: %w", err)
+	}
+	us := &unstructured.Unstructured{Object: obj}
+	us.SetAPIVersion("v1")
+	us.SetKind("ConfigMap")
+	return k.apiApply(ctx, []*unstructured.Unstructured{us}, []apply.ApplyOption{apply.DisableUpdateAnnotation(), apply.Quiet()})
 }
 
 func convertConfigMap2Template(cm v1.ConfigMap) (*Template, error) {
@@ -410,13 +467,26 @@ func (k *kubeConfigFactory) ParseConfig(ctx context.Context,
 			Name:      meta.Name,
 			Namespace: meta.Namespace,
 		}
-		// Render the output secret
-		output, err := template.Template.RunAndOutput(contextValue, meta.Properties)
-		if err != nil && !cue.IsFieldNotExist(err) {
+		// Compile the config template
+		val, err := template.Template.RunAndOutputWithCueX(ctx, contextValue, meta.Properties)
+		if err != nil && !velacue.IsFieldNotExist(err) {
 			return nil, err
 		}
-		if output != nil {
-			if err := output.UnmarshalTo(&secret); err != nil {
+		// Render the validation response and check validation result
+		valid := val.LookupPath(cue.ParsePath(TemplateValidationReturns))
+		validation := Validation{}
+		if valid.Exists() {
+			if err := valid.Decode(&validation); err != nil {
+				return nil, fmt.Errorf("the validation.$returns format must be validation")
+			}
+		}
+		if len(validation.Message) > 0 {
+			return nil, &validation
+		}
+		// Render the output secret
+		output := val.LookupPath(cue.ParsePath(TemplateOutput))
+		if output.Exists() {
+			if err := output.Decode(&secret); err != nil {
 				return nil, fmt.Errorf("the output format must be secret")
 			}
 		}
@@ -446,13 +516,10 @@ func (k *kubeConfigFactory) ParseConfig(ctx context.Context,
 		config.ExpandedWriterData = data
 
 		// Render the outputs objects
-		outputs, err := template.Template.RunAndOutput(contextValue, meta.Properties, "template", "outputs")
-		if err != nil && !cue.IsFieldNotExist(err) {
-			return nil, err
-		}
-		if outputs != nil {
+		outputs := val.LookupPath(cue.ParsePath(TemplateOutputs))
+		if outputs.Exists() {
 			var objects = map[string]interface{}{}
-			if err := outputs.UnmarshalTo(&objects); err != nil {
+			if err := outputs.Decode(&objects); err != nil {
 				return nil, fmt.Errorf("the outputs is invalid %w", err)
 			}
 			var objectReferences []v1.ObjectReference
@@ -545,18 +612,30 @@ func (k *kubeConfigFactory) GetConfig(ctx context.Context, namespace, name strin
 
 // CreateOrUpdateConfig create or update the config.
 // Write the expand config to the target server.
-func (k *kubeConfigFactory) CreateOrUpdateConfig(ctx context.Context, i *Config, ns string) error {
+func (k *kubeConfigFactory) CreateOrUpdateConfig(ctx context.Context, i *Config, _ string) error {
 	var secret v1.Secret
 	if err := k.cli.Get(ctx, pkgtypes.NamespacedName{Namespace: i.Namespace, Name: i.Name}, &secret); err == nil {
 		if secret.Labels[types.LabelConfigType] != i.Template.Name {
-			return ErrConfigExist
+			return ErrChangeTemplate
+		}
+		if i.Secret.Type != "" && secret.Type != i.Secret.Type {
+			return ErrChangeSecretType
 		}
 	}
-	if err := k.apiApply.Apply(ctx, i.Secret, apply.Quiet()); err != nil {
+
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(i.Secret)
+	if err != nil {
+		return fmt.Errorf("fail to convert secret to unstructured: %w", err)
+	}
+	us := &unstructured.Unstructured{Object: obj}
+	us.SetAPIVersion("v1")
+	us.SetKind("Secret")
+
+	if err := k.apiApply(ctx, []*unstructured.Unstructured{us}, []apply.ApplyOption{apply.DisableUpdateAnnotation(), apply.Quiet()}); err != nil {
 		return fmt.Errorf("fail to apply the secret: %w", err)
 	}
 	for key, obj := range i.OutputObjects {
-		if err := k.apiApply.Apply(ctx, obj, apply.Quiet()); err != nil {
+		if err := k.apiApply(ctx, []*unstructured.Unstructured{obj}, []apply.ApplyOption{apply.DisableUpdateAnnotation(), apply.Quiet()}); err != nil {
 			return fmt.Errorf("fail to apply the object %s: %w", key, err)
 		}
 	}
@@ -569,6 +648,17 @@ func (k *kubeConfigFactory) CreateOrUpdateConfig(ctx context.Context, i *Config,
 		}
 	}
 	return nil
+}
+
+func (k *kubeConfigFactory) IsExist(ctx context.Context, namespace, name string) (bool, error) {
+	var secret v1.Secret
+	if err := k.cli.Get(ctx, pkgtypes.NamespacedName{Namespace: namespace, Name: name}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (k *kubeConfigFactory) ListConfigs(ctx context.Context, namespace, template, scope string, withStatus bool) ([]*Config, error) {
@@ -727,13 +817,13 @@ func (k *kubeConfigFactory) CreateOrUpdateDistribution(ctx context.Context, ns, 
 			Name:      name,
 			Namespace: ns,
 			Labels: map[string]string{
-				model.LabelSourceOfTruth: model.FromInner,
+				types.LabelSourceOfTruth: types.FromInner,
 				// This label will override the secret label, then change the catalog of the distributed secrets.
 				types.LabelConfigCatalog: types.CatalogConfigDistribution,
 			},
 			Annotations: map[string]string{
 				types.AnnotationConfigDistributionSpec: string(reqByte),
-				oam.AnnotationPublishVersion:           utils.GenerateVersion("config"),
+				oam.AnnotationPublishVersion:           util.GenerateVersion("config"),
 			},
 		},
 		Spec: v1beta1.ApplicationSpec{
@@ -747,13 +837,21 @@ func (k *kubeConfigFactory) CreateOrUpdateDistribution(ctx context.Context, ns, 
 			Policies: policies,
 		},
 	}
-	return k.apiApply.Apply(ctx, distribution, apply.Quiet())
+	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(distribution)
+	if err != nil {
+		return fmt.Errorf("fail to convert application to unstructured: %w", err)
+	}
+	us := &unstructured.Unstructured{Object: obj}
+	us.SetAPIVersion(v1beta1.SchemeGroupVersion.String())
+	us.SetKind(v1beta1.ApplicationKind)
+
+	return k.apiApply(ctx, []*unstructured.Unstructured{us}, []apply.ApplyOption{apply.DisableUpdateAnnotation(), apply.Quiet()})
 }
 
 func (k *kubeConfigFactory) ListDistributions(ctx context.Context, ns string) ([]*Distribution, error) {
 	var apps v1beta1.ApplicationList
 	if err := k.cli.List(ctx, &apps, client.MatchingLabels{
-		model.LabelSourceOfTruth: model.FromInner,
+		types.LabelSourceOfTruth: types.FromInner,
 		types.LabelConfigCatalog: types.CatalogConfigDistribution,
 	}, client.InNamespace(ns)); err != nil {
 		return nil, err

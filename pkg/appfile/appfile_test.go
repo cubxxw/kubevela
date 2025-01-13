@@ -19,7 +19,6 @@ package appfile
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"cuelang.org/go/cue/cuecontext"
@@ -27,15 +26,14 @@ import (
 	"github.com/google/go-cmp/cmp"
 	terraformtypes "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
 	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta2"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
 	"sigs.k8s.io/yaml"
 
 	"github.com/kubevela/workflow/pkg/cue/model"
@@ -48,259 +46,6 @@ import (
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
-
-var _ = Describe("Test Helm schematic appfile", func() {
-	var (
-		appName      = "test-app"
-		compName     = "test-comp"
-		workloadName = "test-workload"
-	)
-
-	It("Test generate AppConfig resources from Helm schematic", func() {
-		appFile := &Appfile{
-			Name:            appName,
-			Namespace:       "default",
-			AppRevisionName: appName + "-v1",
-			RelatedTraitDefinitions: map[string]*v1beta1.TraitDefinition{
-				"scaler": {
-					Spec: v1beta1.TraitDefinitionSpec{},
-				},
-			},
-			Workloads: []*Workload{
-				{
-					Name:               workloadName,
-					Type:               "webapp-chart",
-					CapabilityCategory: oamtypes.HelmCategory,
-					Params: map[string]interface{}{
-						"image": map[string]interface{}{
-							"tag": "5.1.2",
-						},
-					},
-					engine: definition.NewWorkloadAbstractEngine(compName, pd),
-					Traits: []*Trait{
-						{
-							Name: "scaler",
-							Params: map[string]interface{}{
-								"replicas": float64(10),
-							},
-							engine: definition.NewTraitAbstractEngine("scaler", pd),
-						},
-					},
-					FullTemplate: &Template{
-						Reference: common.WorkloadTypeDescriptor{
-							Definition: common.WorkloadGVK{
-								APIVersion: "apps/v1",
-								Kind:       "Deployment",
-							},
-						},
-						Helm: &common.Helm{
-							Release: *util.Object2RawExtension(map[string]interface{}{
-								"chart": map[string]interface{}{
-									"spec": map[string]interface{}{
-										"chart":   "podinfo",
-										"version": "5.1.4",
-									},
-								},
-							}),
-							Repository: *util.Object2RawExtension(map[string]interface{}{
-								"url": "https://charts.kubevela.net/example/",
-							}),
-						},
-					},
-				},
-			},
-		}
-		By("Generate ApplicationConfiguration and Components")
-		components, err := appFile.GenerateComponentManifests()
-		Expect(err).To(BeNil())
-
-		expectCompManifest := &oamtypes.ComponentManifest{
-			Name: workloadName,
-			StandardWorkload: &unstructured.Unstructured{
-				Object: map[string]interface{}{
-					"apiVersion": "apps/v1",
-					"kind":       "Deployment",
-					"metadata": map[string]interface{}{
-						"labels": map[string]interface{}{
-							"workload.oam.dev/type":   "webapp-chart",
-							"app.oam.dev/component":   compName,
-							"app.oam.dev/name":        appName,
-							"app.oam.dev/appRevision": appName + "-v1",
-						}}}},
-			PackagedWorkloadResources: []*unstructured.Unstructured{
-				{
-					Object: map[string]interface{}{
-						"apiVersion": "helm.toolkit.fluxcd.io/v2beta1",
-						"kind":       "HelmRelease",
-						"metadata": map[string]interface{}{
-							"name":      fmt.Sprintf("%s-%s", appName, compName),
-							"namespace": "default",
-						},
-						"spec": map[string]interface{}{
-							"chart": map[string]interface{}{
-								"spec": map[string]interface{}{
-									"sourceRef": map[string]interface{}{
-										"kind":      "HelmRepository",
-										"name":      fmt.Sprintf("%s-%s", appName, compName),
-										"namespace": "default",
-									},
-								},
-							},
-							"interval": "5m0s",
-							"values": map[string]interface{}{
-								"image": map[string]interface{}{
-									"tag": "5.1.2",
-								},
-							},
-						},
-					},
-				},
-				{
-					Object: map[string]interface{}{
-						"apiVersion": "source.toolkit.fluxcd.io/v1beta1",
-						"kind":       "HelmRepository",
-						"metadata": map[string]interface{}{
-							"name":      fmt.Sprintf("%s-%s", appName, compName),
-							"namespace": "default",
-						},
-						"spec": map[string]interface{}{
-							"url": "https://charts.kubevela.net/example/",
-						},
-					},
-				},
-			},
-		}
-		By("Verify expected ComponentManifest")
-		diff := cmp.Diff(components[0], expectCompManifest)
-		Expect(diff).ShouldNot(BeEmpty())
-	})
-
-})
-
-var _ = Describe("Test Kube schematic appfile", func() {
-	var (
-		appName  = "test-app"
-		compName = "test-comp"
-	)
-	var testTemplate = func() runtime.RawExtension {
-		yamlStr := `apiVersion: apps/v1
-kind: Deployment
-spec:
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-      ports:
-      - containerPort: 80 `
-		b, _ := yaml.YAMLToJSON([]byte(yamlStr))
-		return runtime.RawExtension{Raw: b}
-	}
-
-	var testAppfile = func() *Appfile {
-		return &Appfile{
-			AppRevisionName: appName + "-v1",
-			Name:            appName,
-			Namespace:       "default",
-			RelatedTraitDefinitions: map[string]*v1beta1.TraitDefinition{
-				"scaler": {
-					Spec: v1beta1.TraitDefinitionSpec{},
-				},
-			},
-			Workloads: []*Workload{
-				{
-					Type:               "kube-worker",
-					CapabilityCategory: oamtypes.KubeCategory,
-					Params: map[string]interface{}{
-						"image": "nginx:1.14.0",
-					},
-					engine: definition.NewWorkloadAbstractEngine(compName, pd),
-					Traits: []*Trait{
-						{
-							Name: "scaler",
-							Params: map[string]interface{}{
-								"replicas": float64(10),
-							},
-							engine: definition.NewTraitAbstractEngine("scaler", pd),
-						},
-					},
-					FullTemplate: &Template{
-						Kube: &common.Kube{
-							Template: testTemplate(),
-							Parameters: []common.KubeParameter{
-								{
-									Name:       "image",
-									ValueType:  common.StringType,
-									Required:   pointer.BoolPtr(true),
-									FieldPaths: []string{"spec.template.spec.containers[0].image"},
-								},
-							},
-						},
-						Reference: common.WorkloadTypeDescriptor{
-							Definition: common.WorkloadGVK{
-								APIVersion: "apps/v1",
-								Kind:       "Deployment",
-							},
-						},
-					},
-				},
-			},
-		}
-
-	}
-
-	It("Test generate AppConfig resources from Kube schematic", func() {
-		By("Generate ApplicationConfiguration and Components")
-		comps, err := testAppfile().GenerateComponentManifests()
-		Expect(err).To(BeNil())
-
-		expectWorkload := func() *unstructured.Unstructured {
-			yamlStr := `apiVersion: apps/v1
-kind: Deployment
-spec:
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.14.0
-      ports:
-      - containerPort: 80 `
-			r := &unstructured.Unstructured{}
-			_ = yaml.Unmarshal([]byte(yamlStr), r)
-			return r
-		}()
-
-		expectCompManifest := &oamtypes.ComponentManifest{
-			Name:             compName,
-			StandardWorkload: expectWorkload,
-		}
-		By("Verify expected Component")
-		diff := cmp.Diff(comps[0], expectCompManifest)
-		Expect(diff).ShouldNot(BeEmpty())
-	})
-
-	It("Test missing set required parameter", func() {
-		appfile := testAppfile()
-		// remove parameter settings
-		appfile.Workloads[0].Params = nil
-		_, err := appfile.GenerateComponentManifests()
-
-		expectError := errors.WithMessage(errors.New(`require parameter "image"`), "cannot resolve parameter settings")
-		diff := cmp.Diff(expectError, err, test.EquateErrors())
-		Expect(diff).Should(BeEmpty())
-	})
-})
 
 var _ = Describe("Test Workflow", func() {
 	It("generate workflow task runners", func() {
@@ -333,137 +78,6 @@ wait: op.#ConditionalWait & {
 		err = k8sClient.Create(context.Background(), &notCueStepDef)
 		Expect(err).To(BeNil())
 	})
-})
-
-var _ = Describe("Test Policy", func() {
-	It("test generate PolicyWorkloads", func() {
-		testAppfile := &Appfile{
-			Name:      "test-app",
-			Namespace: "default",
-			Workloads: []*Workload{
-				{
-					Name:               "test-comp",
-					Type:               "worker",
-					CapabilityCategory: oamtypes.KubeCategory,
-					engine:             definition.NewWorkloadAbstractEngine("test-comp", pd),
-					FullTemplate: &Template{
-						Kube: &common.Kube{
-							Template: func() runtime.RawExtension {
-								yamlStr := `apiVersion: apps/v1
-kind: Deployment
-spec:
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-      ports:
-      - containerPort: 80 `
-								b, _ := yaml.YAMLToJSON([]byte(yamlStr))
-								return runtime.RawExtension{Raw: b}
-							}(),
-						},
-					},
-				},
-			},
-			PolicyWorkloads: []*Workload{
-				{
-					Name: "test-policy",
-					Type: "test-policy",
-					Params: map[string]interface{}{
-						"boundComponents": []string{"test-comp"},
-					},
-					FullTemplate: &Template{TemplateStr: `	output: {
-		apiVersion: "core.oam.dev/v1alpha2"
-		kind:       "HealthScope"
-		spec: {
-					for k, v in parameter.boundComponents {
-						compName: v
-						workload: {
-							apiVersion: context.artifacts[v].workload.apiVersion
-							kind:       context.artifacts[v].workload.kind
-							name:       v
-						}
-					},
-		}
-	}
-	outputs: virtualservice: {
-		apiVersion: "networking.istio.io/v1alpha3"
-		kind:       "VirtualService"
-		spec: {
-			hosts: "abc"
-			http: ["abc"]
-		}
-	}
-	parameter: {
-		boundComponents: [...string]
-	}`},
-					engine: definition.NewWorkloadAbstractEngine("test-policy", pd),
-				},
-			},
-			app: &v1beta1.Application{},
-		}
-		_, err := testAppfile.GenerateComponentManifests()
-		Expect(err).Should(BeNil())
-		testAppfile.parser = &Parser{client: k8sClient}
-		gotPolicies, err := testAppfile.GeneratePolicyManifests(context.Background())
-		Expect(err).Should(BeNil())
-		Expect(len(gotPolicies)).ShouldNot(Equal(0))
-
-		expectPolicy0 := unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"spec": map[string]interface{}{
-					"compName": "test-comp",
-					"workload": map[string]interface{}{
-						"name":       "test-comp",
-						"apiVersion": "apps/v1",
-						"kind":       "Deployment",
-					},
-				},
-				"metadata": map[string]interface{}{
-					"name":      "test-policy",
-					"namespace": "default",
-					"labels": map[string]interface{}{
-						"app.oam.dev/name":        "test-app",
-						"app.oam.dev/component":   "test-policy",
-						"app.oam.dev/appRevision": "",
-					},
-				},
-				"apiVersion": "core.oam.dev/v1alpha2",
-				"kind":       "HealthScope",
-			},
-		}
-		Expect(len(gotPolicies)).Should(Equal(2))
-		gotPolicy := gotPolicies[0]
-		Expect(cmp.Diff(gotPolicy.Object, expectPolicy0.Object)).Should(BeEmpty())
-		expectPolicy1 := unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"spec": map[string]interface{}{
-					"hosts": "abc",
-					"http":  []interface{}{"abc"},
-				},
-				"metadata": map[string]interface{}{
-					"name":      "test-policy",
-					"namespace": "default",
-					"labels": map[string]interface{}{
-						"app.oam.dev/name":        "test-app",
-						"app.oam.dev/component":   "test-policy",
-						"app.oam.dev/appRevision": "",
-					},
-				},
-				"apiVersion": "networking.istio.io/v1alpha3",
-				"kind":       "VirtualService",
-			},
-		}
-		gotPolicy = gotPolicies[1]
-		Expect(cmp.Diff(gotPolicy.Object, expectPolicy1.Object)).Should(BeEmpty())
-	})
-
 })
 
 var _ = Describe("Test Terraform schematic appfile", func() {
@@ -521,7 +135,7 @@ variable "password" {
 `
 		)
 
-		wl := &Workload{
+		wl := &Component{
 			Name: "sample-db",
 			FullTemplate: &Template{
 				Terraform: &common.Terraform{
@@ -547,10 +161,10 @@ variable "password" {
 		}
 
 		af := &Appfile{
-			Workloads:       []*Workload{wl},
-			Name:            appName,
-			AppRevisionName: revision,
-			Namespace:       ns,
+			ParsedComponents: []*Component{wl},
+			Name:             appName,
+			AppRevisionName:  revision,
+			Namespace:        ns,
 		}
 
 		variable := map[string]interface{}{"account_name": "oamtest"}
@@ -580,7 +194,7 @@ variable "password" {
 
 		expectCompManifest := &oamtypes.ComponentManifest{
 			Name: compName,
-			StandardWorkload: func() *unstructured.Unstructured {
+			ComponentOutput: func() *unstructured.Unstructured {
 				r, _ := util.Object2Unstructured(workload)
 				return r
 			}(),
@@ -592,77 +206,6 @@ variable "password" {
 		Expect(err).Should(BeNil())
 	})
 })
-
-func TestResolveKubeParameters(t *testing.T) {
-	stringParam := &common.KubeParameter{
-		Name:       "strParam",
-		ValueType:  common.StringType,
-		FieldPaths: []string{"spec"},
-	}
-	requiredParam := &common.KubeParameter{
-		Name:       "reqParam",
-		Required:   pointer.BoolPtr(true),
-		ValueType:  common.StringType,
-		FieldPaths: []string{"spec"},
-	}
-	tests := map[string]struct {
-		reason   string
-		params   []common.KubeParameter
-		settings map[string]interface{}
-		want     paramValueSettings
-		wantErr  error
-	}{
-		"EmptyParam": {
-			reason: "Empty value settings and no error should be returned",
-			want:   make(paramValueSettings),
-		},
-		"UnsupportedParam": {
-			reason:   "An error shoulde be returned because of unsupported param",
-			params:   []common.KubeParameter{*stringParam},
-			settings: map[string]interface{}{"unsupported": "invalid parameter"},
-			want:     nil,
-			wantErr:  errors.Errorf("unsupported parameter %q", "unsupported"),
-		},
-		"MissingRequiredParam": {
-			reason:   "An error should be returned because of missing required param",
-			params:   []common.KubeParameter{*stringParam, *requiredParam},
-			settings: map[string]interface{}{"strParam": "string"},
-			want:     nil,
-			wantErr:  errors.Errorf("require parameter %q", "reqParam"),
-		},
-		"Succeed": {
-			reason:   "No error should be returned",
-			params:   []common.KubeParameter{*stringParam, *requiredParam},
-			settings: map[string]interface{}{"strParam": "test", "reqParam": "test"},
-			want: paramValueSettings{
-				"strParam": paramValueSetting{
-					Value:      "test",
-					ValueType:  common.StringType,
-					FieldPaths: stringParam.FieldPaths,
-				},
-				"reqParam": paramValueSetting{
-					Value:      "test",
-					ValueType:  common.StringType,
-					FieldPaths: requiredParam.FieldPaths,
-				},
-			},
-			wantErr: nil,
-		},
-	}
-
-	for tcName, tc := range tests {
-		t.Run(tcName, func(t *testing.T) {
-			result, err := resolveKubeParameters(tc.params, tc.settings)
-			if diff := cmp.Diff(tc.want, result); diff != "" {
-				t.Fatalf("\nresolveKubeParameters(...)(...) -want +get \nreason:%s\n%s\n", tc.reason, diff)
-			}
-			if diff := cmp.Diff(tc.wantErr, err, test.EquateErrors()); diff != "" {
-				t.Fatalf("\nresolveKubeParameters(...)(...) -want +get \nreason:%s\n%s\n", tc.reason, diff)
-			}
-		})
-	}
-
-}
 
 func TestSetParameterValuesToKubeObj(t *testing.T) {
 	tests := map[string]struct {
@@ -776,13 +319,13 @@ var _ = Describe("Test evalWorkloadWithContext", func() {
 			err      error
 		)
 		type appArgs struct {
-			wl       *Workload
+			wl       *Component
 			appName  string
 			revision string
 		}
 
 		args := appArgs{
-			wl: &Workload{
+			wl: &Component{
 				Name: compName,
 				FullTemplate: &Template{
 					Terraform: &common.Terraform{
@@ -843,7 +386,7 @@ variable "password" {
 					},
 				},
 				CapabilityCategory: oamtypes.TerraformCategory,
-				engine:             definition.NewWorkloadAbstractEngine(compName, pd),
+				engine:             definition.NewWorkloadAbstractEngine(compName),
 				Params: map[string]interface{}{
 					"variable": map[string]interface{}{
 						"account_name": "oamtest",
@@ -861,7 +404,7 @@ variable "password" {
 		}, args.wl.Name)
 		pCtx := NewBasicContext(ctxData, args.wl.Params)
 		comp, err := evalWorkloadWithContext(pCtx, args.wl, ns, args.appName)
-		Expect(comp.StandardWorkload).ShouldNot(BeNil())
+		Expect(comp.ComponentOutput).ShouldNot(BeNil())
 		Expect(comp.Name).Should(Equal(""))
 		Expect(err).Should(BeNil())
 	})
@@ -1052,7 +595,7 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				}
 			}
 
-			wl := &Workload{
+			wl := &Component{
 				FullTemplate: template,
 				Name:         name,
 				Params:       tc.args.params,
@@ -1080,212 +623,16 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 	}
 }
 
-func TestGenerateCUETemplate(t *testing.T) {
-
-	var testCorrectTemplate = func() runtime.RawExtension {
-		yamlStr := `apiVersion: apps/v1
-kind: Deployment
-spec:
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-      ports:
-      - containerPort: 80 `
-		b, _ := yaml.YAMLToJSON([]byte(yamlStr))
-		return runtime.RawExtension{Raw: b}
-	}
-
-	var testErrorTemplate = func() runtime.RawExtension {
-		yamlStr := `apiVersion: apps/v1
-kind: Deployment
-spec:
-  template:
-	selector:
-		matchLabels:
-		app: nginx
-`
-		b, _ := yaml.YAMLToJSON([]byte(yamlStr))
-		return runtime.RawExtension{Raw: b}
-	}
-
-	testcases := map[string]struct {
-		workload   *Workload
-		expectData string
-		hasError   bool
-		errInfo    string
-	}{"Kube workload with Correct template": {
-		workload: &Workload{
-			FullTemplate: &Template{
-				Kube: &common.Kube{
-					Template: testCorrectTemplate(),
-					Parameters: []common.KubeParameter{
-						{
-							Name:       "image",
-							ValueType:  common.StringType,
-							Required:   pointer.BoolPtr(true),
-							FieldPaths: []string{"spec.template.spec.containers[0].image"},
-						},
-					},
-				},
-				Reference: common.WorkloadTypeDescriptor{
-					Definition: common.WorkloadGVK{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-					},
-				},
-			},
-			Params: map[string]interface{}{
-				"image": "nginx:1.14.0",
-			},
-			CapabilityCategory: oamtypes.KubeCategory,
-		},
-		expectData: `
-output: {
-	apiVersion: "apps/v1"
-	kind:       "Deployment"
-	spec: {
-		selector: {
-			matchLabels: {
-				app: "nginx"
-			}
-		}
-		template: {
-			metadata: {
-				labels: {
-					app: "nginx"
-				}
-			}
-			spec: {
-				containers: [{
-					image: "nginx:1.14.0"
-					name:  "nginx"
-				}]
-				ports: [{
-					containerPort: 80
-				}]
-			}
-		}
-	}
-}`,
-		hasError: false,
-	}, "Kube workload with wrong template": {
-		workload: &Workload{
-			FullTemplate: &Template{
-				Kube: &common.Kube{
-					Template: testErrorTemplate(),
-					Parameters: []common.KubeParameter{
-						{
-							Name:       "image",
-							ValueType:  common.StringType,
-							Required:   pointer.BoolPtr(true),
-							FieldPaths: []string{"spec.template.spec.containers[0].image"},
-						},
-					},
-				},
-				Reference: common.WorkloadTypeDescriptor{
-					Definition: common.WorkloadGVK{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-					},
-				},
-			},
-			Params: map[string]interface{}{
-				"image": "nginx:1.14.0",
-			},
-			CapabilityCategory: oamtypes.KubeCategory,
-		},
-		hasError: true,
-		errInfo:  "cannot decode Kube template into K8s object: unexpected end of JSON input",
-	}, "Kube workload with wrong parameter": {
-		workload: &Workload{
-			FullTemplate: &Template{
-				Kube: &common.Kube{
-					Template: testCorrectTemplate(),
-					Parameters: []common.KubeParameter{
-						{
-							Name:       "image",
-							ValueType:  common.StringType,
-							Required:   pointer.BoolPtr(true),
-							FieldPaths: []string{"spec.template.spec.containers[0].image"},
-						},
-					},
-				},
-				Reference: common.WorkloadTypeDescriptor{
-					Definition: common.WorkloadGVK{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
-					},
-				},
-			},
-			Params: map[string]interface{}{
-				"unsupported": "invalid parameter",
-			},
-			CapabilityCategory: oamtypes.KubeCategory,
-		},
-		hasError: true,
-		errInfo:  "cannot resolve parameter settings: unsupported parameter \"unsupported\"",
-	}, "Helm workload with correct reference": {
-		workload: &Workload{
-			FullTemplate: &Template{
-				Reference: common.WorkloadTypeDescriptor{
-					Definition: common.WorkloadGVK{
-						APIVersion: "app/v1",
-						Kind:       "deployment",
-					},
-				},
-			},
-			CapabilityCategory: oamtypes.HelmCategory,
-		},
-		hasError: false,
-		expectData: `
-output: {
-	apiVersion: "app/v1"
-	kind: "deployment"
-}`,
-	}, "Helm workload with wrong reference": {
-		workload: &Workload{
-			FullTemplate: &Template{
-				Reference: common.WorkloadTypeDescriptor{
-					Definition: common.WorkloadGVK{
-						APIVersion: "app@//v1",
-						Kind:       "deployment",
-					},
-				},
-			},
-			CapabilityCategory: oamtypes.HelmCategory,
-		},
-		hasError: true,
-		errInfo:  "unexpected GroupVersion string: app@//v1",
-	}}
-
-	for i, tc := range testcases {
-		template, err := GenerateCUETemplate(tc.workload)
-		assert.Equal(t, err != nil, tc.hasError)
-		if tc.hasError {
-			assert.Equal(t, tc.errInfo, err.Error())
-			continue
-		}
-		assert.Equal(t, tc.expectData, template, i)
-	}
-}
-
 func TestPrepareArtifactsData(t *testing.T) {
 	compManifests := []*oamtypes.ComponentManifest{
 		{
 			Name:         "readyComp",
 			Namespace:    "ns",
 			RevisionName: "readyComp-v1",
-			StandardWorkload: &unstructured.Unstructured{Object: map[string]interface{}{
+			ComponentOutput: &unstructured.Unstructured{Object: map[string]interface{}{
 				"fake": "workload",
 			}},
-			Traits: func() []*unstructured.Unstructured {
+			ComponentOutputsAndTraits: func() []*unstructured.Unstructured {
 				ingressYAML := `apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -1319,17 +666,17 @@ spec:
 
 	gotArtifacts := prepareArtifactsData(compManifests)
 	gotWorkload, _, err := unstructured.NestedMap(gotArtifacts, "readyComp", "workload")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	diff := cmp.Diff(gotWorkload, map[string]interface{}{"fake": string("workload")})
 	assert.Equal(t, diff, "")
 
 	_, gotIngress, err := unstructured.NestedMap(gotArtifacts, "readyComp", "traits", "ingress", "ingress")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	if !gotIngress {
 		t.Fatalf("cannot get ingress trait")
 	}
 	_, gotSvc, err := unstructured.NestedMap(gotArtifacts, "readyComp", "traits", "ingress", "service")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	if !gotSvc {
 		t.Fatalf("cannot get service trait")
 	}
@@ -1366,10 +713,10 @@ func TestBaseGenerateComponent(t *testing.T) {
 	inst := cuecontext.New().CompileString(base)
 	bs, _ := model.NewBase(inst.Value())
 	err := pContext.SetBase(bs)
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	tr := &Trait{
 		Name:   traitName,
-		engine: definition.NewTraitAbstractEngine(traitName, nil),
+		engine: definition.NewTraitAbstractEngine(traitName),
 		Template: `outputs:mytrait:{
 if context.componentType == "stateless" {
              kind:  			"Deployment"
@@ -1383,12 +730,12 @@ if context.componentType == "stateless" {
   publishVersion:         context.publishVersion
 }`,
 	}
-	wl := &Workload{Type: "stateful", Traits: []*Trait{tr}}
+	wl := &Component{Type: "stateful", Traits: []*Trait{tr}}
 	cm, err := baseGenerateComponent(pContext, wl, appName, ns)
-	assert.NilError(t, err)
-	assert.Equal(t, cm.Traits[0].Object["kind"], "StatefulSet")
-	assert.Equal(t, cm.Traits[0].Object["workflowName"], workflowName)
-	assert.Equal(t, cm.Traits[0].Object["publishVersion"], publishVersion)
+	assert.NoError(t, err)
+	assert.Equal(t, cm.ComponentOutputsAndTraits[0].Object["kind"], "StatefulSet")
+	assert.Equal(t, cm.ComponentOutputsAndTraits[0].Object["workflowName"], workflowName)
+	assert.Equal(t, cm.ComponentOutputsAndTraits[0].Object["publishVersion"], publishVersion)
 }
 
 var _ = Describe("Test use context.appLabels& context.appAnnotations in componentDefinition ", func() {
@@ -1404,7 +751,7 @@ var _ = Describe("Test use context.appLabels& context.appAnnotations in componen
 				"ak1": "av1",
 				"ak2": "av2",
 			},
-			Workloads: []*Workload{
+			ParsedComponents: []*Component{
 				{
 					Name: "comp1",
 					Type: "deployment",
@@ -1412,7 +759,7 @@ var _ = Describe("Test use context.appLabels& context.appAnnotations in componen
 						"image": "busybox",
 						"cmd":   []interface{}{"sleep", "1000"},
 					},
-					engine: definition.NewWorkloadAbstractEngine("myweb", pd),
+					engine: definition.NewWorkloadAbstractEngine("myweb"),
 					FullTemplate: &Template{
 						TemplateStr: `
 						  output: {
@@ -1470,7 +817,7 @@ var _ = Describe("Test use context.appLabels& context.appAnnotations in componen
 		Expect(err).To(BeNil())
 		By("Verify expected ComponentManifest")
 		deployment := &appsv1.Deployment{}
-		runtime.DefaultUnstructuredConverter.FromUnstructured(componentManifests[0].StandardWorkload.Object, deployment)
+		runtime.DefaultUnstructuredConverter.FromUnstructured(componentManifests[0].ComponentOutput.Object, deployment)
 		labels := deployment.Spec.Template.Labels
 		annotations := deployment.Spec.Template.Annotations
 		Expect(cmp.Diff(len(labels), 2)).Should(BeEmpty())

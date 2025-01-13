@@ -59,7 +59,7 @@ func NewUnInstallCommand(c common.Args, order string, ioStreams util.IOStreams) 
 	}, helmHelper: helm.NewHelper()}
 	cmd := &cobra.Command{
 		Use:     "uninstall",
-		Short:   "Uninstalls KubeVela from a Kubernetes cluster",
+		Short:   "Uninstalls KubeVela from a Kubernetes cluster.",
 		Example: `vela uninstall`,
 		Long:    "Uninstalls KubeVela from a Kubernetes cluster.",
 		Args:    cobra.ExactArgs(0),
@@ -80,7 +80,7 @@ func NewUnInstallCommand(c common.Args, order string, ioStreams util.IOStreams) 
 					return errors.Wrapf(err, "cannot check installed addon")
 				}
 				if len(addons) != 0 {
-					return fmt.Errorf("these addons have been eanbled :%v, please guarantee there is no application using these addons and use `vela uninstall -f` uninstall include addon ", addons)
+					return fmt.Errorf("these addons have been enabled :%v, please guarantee there is no application using these addons and use `vela uninstall -f` uninstall include addon ", addons)
 				}
 			}
 

@@ -17,13 +17,7 @@ limitations under the License.
 package types
 
 import (
-	"encoding/json"
-
 	"cuelang.org/go/cue"
-	"github.com/spf13/pflag"
-	"k8s.io/apimachinery/pkg/runtime"
-
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
 
 // Source record the source of Capability
@@ -38,22 +32,6 @@ type CRDInfo struct {
 	Kind       string `json:"kind"`
 }
 
-// Chart defines all necessary information to install a whole chart
-type Chart struct {
-	Repo      string                 `json:"repo"`
-	URL       string                 `json:"url"`
-	Name      string                 `json:"name"`
-	Namespace string                 `json:"namespace,omitempty"`
-	Version   string                 `json:"version"`
-	Values    map[string]interface{} `json:"values"`
-}
-
-// Installation defines the installation method for this Capability, currently only helm is supported
-type Installation struct {
-	Helm Chart `json:"helm"`
-	// TODO(wonderflow) add raw yaml file support for install capability
-}
-
 // CapType defines the type of capability
 type CapType string
 
@@ -64,8 +42,6 @@ const (
 	TypeWorkload CapType = "workload"
 	// TypeTrait represents OAM Trait
 	TypeTrait CapType = "trait"
-	// TypeScope represent OAM Scope
-	TypeScope CapType = "scope"
 	// TypeWorkflowStep represent OAM Workflow
 	TypeWorkflowStep CapType = "workflowstep"
 	// TypePolicy represent OAM Policy
@@ -91,10 +67,6 @@ type CapabilityCategory string
 const (
 	TerraformCategory CapabilityCategory = "terraform"
 
-	HelmCategory CapabilityCategory = "helm"
-
-	KubeCategory CapabilityCategory = "kube"
-
 	CUECategory CapabilityCategory = "cue"
 )
 
@@ -111,49 +83,6 @@ type Parameter struct {
 	JSONType string      `json:"jsonType,omitempty"`
 }
 
-// SetFlagBy set cli flag from Parameter
-func SetFlagBy(flags *pflag.FlagSet, v Parameter) {
-	name := v.Name
-	if v.Alias != "" {
-		name = v.Alias
-	}
-	// nolint:exhaustive
-	switch v.Type {
-	case cue.IntKind:
-		var vv int64
-		switch val := v.Default.(type) {
-		case int64:
-			vv = val
-		case json.Number:
-			vv, _ = val.Int64()
-		case int:
-			vv = int64(val)
-		case float64:
-			vv = int64(val)
-		}
-		flags.Int64P(name, v.Short, vv, v.Usage)
-	case cue.StringKind:
-		flags.StringP(name, v.Short, v.Default.(string), v.Usage)
-	case cue.BoolKind:
-		flags.BoolP(name, v.Short, v.Default.(bool), v.Usage)
-	case cue.NumberKind, cue.FloatKind:
-		var vv float64
-		switch val := v.Default.(type) {
-		case int64:
-			vv = float64(val)
-		case json.Number:
-			vv, _ = val.Float64()
-		case int:
-			vv = float64(val)
-		case float64:
-			vv = val
-		}
-		flags.Float64P(name, v.Short, vv, v.Usage)
-	default:
-		// other types not supported yet
-	}
-}
-
 // Capability defines the content of a capability
 type Capability struct {
 	Name           string             `json:"name"`
@@ -162,7 +91,6 @@ type Capability struct {
 	CueTemplateURI string             `json:"templateURI,omitempty"`
 	Parameters     []Parameter        `json:"parameters,omitempty"`
 	CrdName        string             `json:"crdName,omitempty"`
-	Center         string             `json:"center,omitempty"`
 	Status         string             `json:"status,omitempty"`
 	Description    string             `json:"description,omitempty"`
 	Example        string             `json:"example,omitempty"`
@@ -176,16 +104,10 @@ type Capability struct {
 	Namespace string `json:"namespace,omitempty"`
 
 	// Plugin Source
-	Source  *Source       `json:"source,omitempty"`
-	Install *Installation `json:"install,omitempty"`
-	CrdInfo *CRDInfo      `json:"crdInfo,omitempty"`
+	Source *Source `json:"source,omitempty"`
 
 	// Terraform
 	TerraformConfiguration string `json:"terraformConfiguration,omitempty"`
 	ConfigurationType      string `json:"configurationType,omitempty"`
 	Path                   string `json:"path,omitempty"`
-
-	// KubeTemplate
-	KubeTemplate  runtime.RawExtension   `json:"kubetemplate,omitempty"`
-	KubeParameter []common.KubeParameter `json:"kubeparameter,omitempty"`
 }

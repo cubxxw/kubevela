@@ -33,8 +33,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
-	"github.com/kubevela/workflow/pkg/cue/packages"
-
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
@@ -65,7 +63,7 @@ var generateDocOnly bool
 var showFormat string
 
 // NewCapabilityShowCommand shows the reference doc for a component type or trait
-func NewCapabilityShowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewCapabilityShowCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	var revision, path, location, i18nPath string
 	cmd := &cobra.Command{
 		Use:   "show",
@@ -121,7 +119,8 @@ func NewCapabilityShowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra
 			return ShowReferenceConsole(ctx, c, ioStreams, capabilityName, namespace, location, i18nPath, int64(ver))
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeStart,
+			types.TagCommandType:  types.TypeStart,
+			types.TagCommandOrder: order,
 		},
 	}
 
@@ -153,10 +152,7 @@ func generateWebsiteDocs(capabilities []types.Capability, docsPath string) error
 		return err
 	}
 
-	if err := generateREADME(capabilities, docsPath); err != nil {
-		return err
-	}
-	return nil
+	return generateREADME(capabilities, docsPath)
 }
 
 func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStreams cmdutil.IOStreams, capabilityName string) error {
@@ -198,27 +194,14 @@ func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStr
 	if err != nil {
 		return err
 	}
-	config, err := c.GetConfig()
-	if err != nil {
-		return err
-	}
-	pd, err := packages.NewPackageDiscover(config)
-	if err != nil {
-		return err
-	}
-	dm, err := c.GetDiscoveryMapper()
-	if err != nil {
-		return err
-	}
 	ref := &docgen.MarkdownReference{
 		ParseReference: docgen.ParseReference{
 			Client: cli,
 			I18N:   &docgen.En,
 		},
-		DiscoveryMapper: dm,
 	}
 
-	if err := ref.CreateMarkdown(ctx, capabilities, docsPath, true, pd); err != nil {
+	if err := ref.CreateMarkdown(ctx, capabilities, docsPath, true); err != nil {
 		return err
 	}
 
@@ -230,7 +213,7 @@ func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStr
 		return nil
 	}
 
-	if capabilityType != types.TypeWorkload && capabilityType != types.TypeTrait && capabilityType != types.TypeScope &&
+	if capabilityType != types.TypeWorkload && capabilityType != types.TypeTrait &&
 		capabilityType != types.TypeComponentDefinition && capabilityType != types.TypeWorkflowStep && capabilityType != "" {
 		return fmt.Errorf("unsupported type: %v", capabilityType)
 	}
@@ -289,7 +272,7 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 	}
 
 	for _, c := range components {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", c, types.TypeComponentDefinition, c)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", c, types.TypeComponentDefinition, c); err != nil {
 			return err
 		}
 	}
@@ -297,7 +280,7 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range traits {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeTrait, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypeTrait, t); err != nil {
 			return err
 		}
 	}
@@ -305,7 +288,7 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range workflowSteps {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t); err != nil {
 			return err
 		}
 	}
@@ -314,7 +297,7 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range policies {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypePolicy, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypePolicy, t); err != nil {
 			return err
 		}
 	}
@@ -396,7 +379,7 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 	}
 
 	for _, w := range workloads {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", w, types.TypeComponentDefinition, w)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", w, types.TypeComponentDefinition, w); err != nil {
 			return err
 		}
 	}
@@ -405,7 +388,7 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 	}
 
 	for _, t := range traits {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeTrait, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypeTrait, t); err != nil {
 			return err
 		}
 	}
@@ -414,7 +397,7 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range workflowSteps {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t); err != nil {
 			return err
 		}
 	}
@@ -423,7 +406,7 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range policies {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypePolicy, t)); err != nil {
+		if _, err := fmt.Fprintf(f, "  - [%s](%s/%s.md)\n", t, types.TypePolicy, t); err != nil {
 			return err
 		}
 	}
@@ -443,7 +426,6 @@ func getDefinitions(capabilities []types.Capability) ([]string, []string, []stri
 			workflowSteps = append(workflowSteps, c.Name)
 		case types.TypePolicy:
 			policies = append(policies, c.Name)
-		case types.TypeScope:
 		case types.TypeWorkload:
 		default:
 		}
@@ -469,16 +451,17 @@ func ShowReferenceConsole(ctx context.Context, c common.Args, ioStreams cmdutil.
 
 // ShowReferenceMarkdown will show capability in "markdown" format
 func ShowReferenceMarkdown(ctx context.Context, c common.Args, ioStreams cmdutil.IOStreams, capabilityNameOrPath, outputPath, location, i18nPath, ns string, rev int64) error {
+	cli, err := c.GetClient()
+	if err != nil {
+		return err
+	}
 	ref := &docgen.MarkdownReference{}
-	paserRef, err := genRefParser(capabilityNameOrPath, ns, location, i18nPath, rev)
+	parseRef, err := genRefParser(capabilityNameOrPath, ns, location, i18nPath, rev)
 	if err != nil {
 		return err
 	}
-	ref.ParseReference = paserRef
-	ref.DiscoveryMapper, err = c.GetDiscoveryMapper()
-	if err != nil {
-		return err
-	}
+	parseRef.Client = cli
+	ref.ParseReference = parseRef
 	if err := ref.GenerateReferenceDocs(ctx, c, outputPath); err != nil {
 		return errors.Wrap(err, "failed to generate reference docs")
 	}
@@ -498,7 +481,7 @@ func genRefParser(capabilityNameOrPath, ns, location, i18nPath string, rev int64
 		localFilePath := capabilityNameOrPath
 		fileName := filepath.Base(localFilePath)
 		ref.DefinitionName = strings.TrimSuffix(strings.TrimSuffix(fileName, ".yaml"), ".cue")
-		ref.Local = &docgen.FromLocal{Path: localFilePath}
+		ref.Local = &docgen.FromLocal{Paths: []string{localFilePath}}
 	} else {
 		ref.DefinitionName = capabilityNameOrPath
 		ref.Remote = &docgen.FromCluster{Namespace: ns, Rev: rev}

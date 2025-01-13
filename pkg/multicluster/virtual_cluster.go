@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kubevela/pkg/util/singleton"
+	velaslices "github.com/kubevela/pkg/util/slices"
 	"github.com/oam-dev/cluster-gateway/pkg/generated/clientset/versioned"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -32,17 +34,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/scheme"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
 	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 
 	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	velaerrors "github.com/oam-dev/kubevela/pkg/utils/errors"
 )
@@ -55,19 +58,17 @@ func InitClusterInfo(cfg *rest.Config) error {
 	if err != nil {
 		return err
 	}
-	client, err := client.New(cfg, client.Options{Scheme: common.Scheme})
-	if err != nil {
-		return err
-	}
-	clusters, err := prismclusterv1alpha1.NewClusterClient(client).List(ctx)
-	if err != nil {
-		return errors.Wrap(err, "fail to get registered clusters")
-	}
-	for _, cluster := range clusters.Items {
-		if err = SetClusterVersionInfo(ctx, cfg, cluster.Name); err != nil {
-			klog.Warningf("set cluster version for %s: %v, skip it...", cluster.Name, err)
-			continue
+	if !utilfeature.DefaultMutableFeatureGate.Enabled(features.DisableBootstrapClusterInfo) {
+		clusters, err := NewClusterClient(singleton.KubeClient.Get()).List(ctx)
+		if err != nil {
+			return errors.Wrap(err, "fail to get registered clusters")
 		}
+
+		velaslices.ParFor(clusters.Items, func(cluster v1alpha1.VirtualCluster) {
+			if err = SetClusterVersionInfo(ctx, cfg, cluster.Name); err != nil {
+				klog.Warningf("set cluster version for %s: %v, skip it...", cluster.Name, err)
+			}
+		})
 	}
 	return nil
 }
@@ -95,7 +96,7 @@ func (vc *VirtualCluster) FullName() string {
 
 func getClusterAlias(o client.Object) string {
 	if annots := o.GetAnnotations(); annots != nil {
-		return annots[types.AnnotationClusterAlias]
+		return annots[v1alpha1.AnnotationClusterAlias]
 	}
 	return ""
 }
@@ -105,7 +106,7 @@ func setClusterAlias(o client.Object, alias string) {
 	if annots == nil {
 		annots = map[string]string{}
 	}
-	annots[types.AnnotationClusterAlias] = alias
+	annots[v1alpha1.AnnotationClusterAlias] = alias
 	o.SetAnnotations(annots)
 }
 
@@ -292,7 +293,7 @@ func (cm clusterAliasMapper) GetClusterName(cluster string) string {
 // NewClusterNameMapper load all clusters and return the mapper of their names
 func NewClusterNameMapper(ctx context.Context, c client.Client) (ClusterNameMapper, error) {
 	cm := clusterAliasMapper(make(map[string]string))
-	clusters := &prismclusterv1alpha1.ClusterList{}
+	clusters := &v1alpha1.VirtualClusterList{}
 	if err := c.List(ctx, clusters); err == nil {
 		for _, cluster := range clusters.Items {
 			cm[cluster.Name] = cluster.Spec.Alias
@@ -409,4 +410,9 @@ func RequestRawK8sAPIForCluster(ctx context.Context, path, clusterName string, c
 		return restClient.Get().AbsPath(path).DoRaw(ctx)
 	}
 	return versioned.NewForConfigOrDie(cfg).ClusterV1alpha1().ClusterGateways().RESTClient(clusterName).Get().AbsPath(path).DoRaw(ctx)
+}
+
+// NewClusterClient create virtual cluster client
+func NewClusterClient(cli client.Client) v1alpha1.VirtualClusterClient {
+	return v1alpha1.NewVirtualClusterClient(cli, ClusterGatewaySecretNamespace, true)
 }

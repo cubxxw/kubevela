@@ -24,6 +24,7 @@ import (
 	"io"
 	"strings"
 
+	"cuelang.org/go/cue/cuecontext"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -39,8 +40,6 @@ import (
 	"k8s.io/utils/strings/slices"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/kubevela/workflow/pkg/cue/model/value"
-
 	"github.com/oam-dev/kubevela/apis/types"
 	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	cmdutil "github.com/oam-dev/kubevela/pkg/cmd/util"
@@ -50,12 +49,13 @@ import (
 )
 
 // KubeCommandGroup command group for native resource management
-func KubeCommandGroup(f velacmd.Factory, streams util.IOStreams) *cobra.Command {
+func KubeCommandGroup(f velacmd.Factory, order string, streams util.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kube",
 		Short: i18n.T("Managing native Kubernetes resources across clusters."),
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeCD,
+			types.TagCommandType:  types.TypeAuxiliary,
+			types.TagCommandOrder: order,
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 
@@ -125,7 +125,7 @@ func (opt *KubeApplyOptions) Validate() error {
 
 	for _, fileData := range opt.filesData {
 		switch {
-		case strings.HasSuffix(fileData.Path, ".yaml"), strings.HasSuffix(fileData.Path, ".yml"):
+		case strings.HasSuffix(fileData.Path, YAMLExtension), strings.HasSuffix(fileData.Path, YMLExtension):
 			decoder := yaml.NewDecoder(bytes.NewReader(fileData.Data))
 			for {
 				obj := &unstructured.Unstructured{Object: map[string]interface{}{}}
@@ -150,11 +150,7 @@ func (opt *KubeApplyOptions) Validate() error {
 			}
 			opt.objects = append(opt.objects, obj)
 		case strings.HasSuffix(fileData.Path, ".cue"):
-			val, err := value.NewValue(string(fileData.Data), nil, "")
-			if err != nil {
-				return fmt.Errorf("failed to decode object in %s: %w", fileData.Path, err)
-			}
-			data, err := val.CueValue().MarshalJSON()
+			data, err := cuecontext.New().CompileBytes(fileData.Data).MarshalJSON()
 			if err != nil {
 				return fmt.Errorf("failed to marhsal to json for CUE object in %s: %w", fileData.Path, err)
 			}
@@ -286,6 +282,7 @@ type KubeDeleteOptions struct {
 	deleteAll    bool
 	resource     string
 	resourceName string
+	group        string
 
 	util.IOStreams
 }
@@ -321,6 +318,7 @@ func (opt *KubeDeleteOptions) Complete(f velacmd.Factory, cmd *cobra.Command, ar
 	if len(args) == 2 {
 		opt.resourceName = args[1]
 	}
+	opt.group = velacmd.GetGroup(cmd)
 }
 
 // Validate .
@@ -336,9 +334,9 @@ func (opt *KubeDeleteOptions) Validate() error {
 
 // Run .
 func (opt *KubeDeleteOptions) Run(f velacmd.Factory, cmd *cobra.Command) error {
-	gvks, err := f.Client().RESTMapper().KindsFor(schema.GroupVersionResource{Resource: opt.resource})
+	gvks, err := f.Client().RESTMapper().KindsFor(schema.GroupVersionResource{Resource: opt.resource, Group: opt.group})
 	if err != nil {
-		return fmt.Errorf("failed to find kinds for resource %s: %w", opt.resource, err)
+		return fmt.Errorf("failed to find kinds for resource %s, err returned by RESTMapper is: %w", opt.resource, err)
 	}
 	if len(gvks) == 0 {
 		return fmt.Errorf("no kinds found for resource %s", opt.resource)
@@ -413,6 +411,7 @@ func NewKubeDeleteCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Comm
 			velacmd.UsageOption("The namespace to delete objects. If empty, the default namespace will be used."),
 		).
 		WithClusterFlag(velacmd.UsageOption("The cluster to delete objects. Setting multiple clusters will delete objects in order.")).
+		WithGroupFlag().
 		WithStreams(streams).
 		WithResponsiveWriter().
 		Build()

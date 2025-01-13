@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -43,7 +43,7 @@ func TestResourceKeeper(t *testing.T) {
 	RunSpecs(t, "ResourceKeeper Suite")
 }
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	By("Bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute,
@@ -51,7 +51,7 @@ var _ = BeforeSuite(func(done Done) {
 		CRDDirectoryPaths: []string{
 			filepath.Join("../..", "charts/vela-core/crds"), // this has all the required CRDs,
 		},
-		UseExistingCluster:    pointer.Bool(false),
+		UseExistingCluster:    ptr.To(false),
 		ErrorIfCRDPathMissing: true,
 	}
 	var err error
@@ -71,7 +71,7 @@ var _ = BeforeSuite(func(done Done) {
 		CRDDirectoryPaths: []string{
 			filepath.Join("../..", "charts/vela-core/crds"), // this has all the required CRDs,
 		},
-		UseExistingCluster:    pointer.Bool(false),
+		UseExistingCluster:    ptr.To(false),
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err = workerEnv.Start()
@@ -80,9 +80,7 @@ var _ = BeforeSuite(func(done Done) {
 	workerClient, err = client.New(cfg, client.Options{Scheme: common.Scheme})
 	Expect(err).ShouldNot(HaveOccurred())
 	Expect(workerClient).ShouldNot(BeNil())
-
-	close(done)
-}, 300)
+})
 
 var _ = AfterSuite(func() {
 	Expect(testEnv.Stop()).Should(Succeed())

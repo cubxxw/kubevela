@@ -17,51 +17,50 @@ limitations under the License.
 package options
 
 import (
-	"flag"
 	"strconv"
 	"time"
 
+	pkgclient "github.com/kubevela/pkg/controller/client"
 	ctrlrec "github.com/kubevela/pkg/controller/reconciler"
+	"github.com/kubevela/pkg/controller/sharding"
 	pkgmulticluster "github.com/kubevela/pkg/multicluster"
+	utillog "github.com/kubevela/pkg/util/log"
+	"github.com/kubevela/pkg/util/profiling"
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog/v2"
 
 	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
+	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
-
-	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers"
 )
 
 // CoreOptions contains everything necessary to create and run vela-core
 type CoreOptions struct {
-	UseWebhook                 bool
-	CertDir                    string
-	WebhookPort                int
-	MetricsAddr                string
-	EnableLeaderElection       bool
-	LeaderElectionNamespace    string
-	LogFilePath                string
-	LogFileMaxSize             uint64
-	LogDebug                   bool
-	ControllerArgs             *oamcontroller.Args
-	HealthAddr                 string
-	DisableCaps                string
-	StorageDriver              string
-	InformerSyncPeriod         time.Duration
-	QPS                        float64
-	Burst                      int
-	PprofAddr                  string
-	LeaderElectionResourceLock string
-	LeaseDuration              time.Duration
-	RenewDeadLine              time.Duration
-	RetryPeriod                time.Duration
-	EnableClusterGateway       bool
-	EnableClusterMetrics       bool
-	ClusterMetricsInterval     time.Duration
+	UseWebhook              bool
+	CertDir                 string
+	WebhookPort             int
+	MetricsAddr             string
+	EnableLeaderElection    bool
+	LeaderElectionNamespace string
+	LogFilePath             string
+	LogFileMaxSize          uint64
+	LogDebug                bool
+	ControllerArgs          *oamcontroller.Args
+	HealthAddr              string
+	StorageDriver           string
+	InformerSyncPeriod      time.Duration
+	QPS                     float64
+	Burst                   int
+	LeaseDuration           time.Duration
+	RenewDeadLine           time.Duration
+	RetryPeriod             time.Duration
+	EnableClusterGateway    bool
+	EnableClusterMetrics    bool
+	ClusterMetricsInterval  time.Duration
 }
 
 // NewCoreOptions creates a new NewVelaCoreOptions object with default parameters
@@ -80,29 +79,22 @@ func NewCoreOptions() *CoreOptions {
 			RevisionLimit:                                50,
 			AppRevisionLimit:                             10,
 			DefRevisionLimit:                             20,
-			CustomRevisionHookURL:                        "",
 			AutoGenWorkloadDefinition:                    true,
 			ConcurrentReconciles:                         4,
-			DependCheckWait:                              30 * time.Second,
-			OAMSpecVer:                                   "v0.3",
-			EnableCompatibility:                          false,
 			IgnoreAppWithoutControllerRequirement:        false,
 			IgnoreDefinitionWithoutControllerRequirement: false,
 		},
-		HealthAddr:                 ":9440",
-		DisableCaps:                "",
-		StorageDriver:              "Local",
-		InformerSyncPeriod:         10 * time.Hour,
-		QPS:                        50,
-		Burst:                      100,
-		PprofAddr:                  "",
-		LeaderElectionResourceLock: "configmapsleases",
-		LeaseDuration:              15 * time.Second,
-		RenewDeadLine:              10 * time.Second,
-		RetryPeriod:                2 * time.Second,
-		EnableClusterGateway:       false,
-		EnableClusterMetrics:       false,
-		ClusterMetricsInterval:     15 * time.Second,
+		HealthAddr:             ":9440",
+		StorageDriver:          "Local",
+		InformerSyncPeriod:     10 * time.Hour,
+		QPS:                    50,
+		Burst:                  100,
+		LeaseDuration:          15 * time.Second,
+		RenewDeadLine:          10 * time.Second,
+		RetryPeriod:            2 * time.Second,
+		EnableClusterGateway:   false,
+		EnableClusterMetrics:   false,
+		ClusterMetricsInterval: 15 * time.Second,
 	}
 	return s
 }
@@ -124,14 +116,10 @@ func (s *CoreOptions) Flags() cliflag.NamedFlagSets {
 	gfs.Uint64Var(&s.LogFileMaxSize, "log-file-max-size", s.LogFileMaxSize, "Defines the maximum size a log file can grow to, Unit is megabytes.")
 	gfs.BoolVar(&s.LogDebug, "log-debug", s.LogDebug, "Enable debug logs for development purpose")
 	gfs.StringVar(&s.HealthAddr, "health-addr", s.HealthAddr, "The address the health endpoint binds to.")
-	gfs.StringVar(&s.DisableCaps, "disable-caps", s.DisableCaps, "To be disabled builtin capability list.")
-	gfs.StringVar(&s.StorageDriver, "storage-driver", s.StorageDriver, "Application file save to the storage driver")
 	gfs.DurationVar(&s.InformerSyncPeriod, "informer-sync-period", s.InformerSyncPeriod,
 		"The re-sync period for informer in controller-runtime. This is a system-level configuration.")
 	gfs.Float64Var(&s.QPS, "kube-api-qps", s.QPS, "the qps for reconcile clients. Low qps may lead to low throughput. High qps may give stress to api-server. Raise this value if concurrent-reconciles is set to be high.")
 	gfs.IntVar(&s.Burst, "kube-api-burst", s.Burst, "the burst for reconcile clients. Recommend setting it qps*2.")
-	gfs.StringVar(&s.PprofAddr, "pprof-addr", s.PprofAddr, "The address for pprof to use while exporting profiling results. The default value is empty which means do not expose it. Set it to address like :6666 to expose it.")
-	gfs.StringVar(&s.LeaderElectionResourceLock, "leader-election-resource-lock", s.LeaderElectionResourceLock, "The resource lock to use for leader election")
 	gfs.DurationVar(&s.LeaseDuration, "leader-election-lease-duration", s.LeaseDuration,
 		"The duration that non-leader candidates will wait to force acquire leadership")
 	gfs.DurationVar(&s.RenewDeadLine, "leader-election-renew-deadline", s.RenewDeadLine,
@@ -141,6 +129,8 @@ func (s *CoreOptions) Flags() cliflag.NamedFlagSets {
 	gfs.BoolVar(&s.EnableClusterGateway, "enable-cluster-gateway", s.EnableClusterGateway, "Enable cluster-gateway to use multicluster, disabled by default.")
 	gfs.BoolVar(&s.EnableClusterMetrics, "enable-cluster-metrics", s.EnableClusterMetrics, "Enable cluster-metrics-management to collect metrics from clusters with cluster-gateway, disabled by default. When this param is enabled, enable-cluster-gateway should be enabled")
 	gfs.DurationVar(&s.ClusterMetricsInterval, "cluster-metrics-interval", s.ClusterMetricsInterval, "The interval that ClusterMetricsMgr will collect metrics from clusters, default value is 15 seconds.")
+	gfs.BoolVar(&providers.EnableExternalPackageForDefaultCompiler, "enable-external-package-for-default-compiler", providers.EnableExternalPackageForDefaultCompiler, "Enable external package for default compiler")
+	gfs.BoolVar(&providers.EnableExternalPackageWatchForDefaultCompiler, "enable-external-package-watch-for-default-compiler", providers.EnableExternalPackageWatchForDefaultCompiler, "Enable external package watch for default compiler")
 
 	s.ControllerArgs.AddFlags(fss.FlagSet("controllerArgs"), s.ControllerArgs)
 
@@ -160,17 +150,17 @@ func (s *CoreOptions) Flags() cliflag.NamedFlagSets {
 
 	wfs := fss.FlagSet("wfTypes")
 	wfs.IntVar(&wfTypes.MaxWorkflowWaitBackoffTime, "max-workflow-wait-backoff-time", 60, "Set the max workflow wait backoff time, default is 60")
-	wfs.IntVar(&wfTypes.MaxWorkflowFailedBackoffTime, "max-workflow-failed-backoff-time", 300, "Set the max workflow wait backoff time, default is 300")
+	wfs.IntVar(&wfTypes.MaxWorkflowFailedBackoffTime, "max-workflow-failed-backoff-time", 300, "Set the max workflow failed backoff time, default is 300")
 	wfs.IntVar(&wfTypes.MaxWorkflowStepErrorRetryTimes, "max-workflow-step-error-retry-times", 10, "Set the max workflow step error retry times, default is 10")
 
 	pkgmulticluster.AddFlags(fss.FlagSet("multicluster"))
 	ctrlrec.AddFlags(fss.FlagSet("controllerreconciles"))
 	utilfeature.DefaultMutableFeatureGate.AddFlag(fss.FlagSet("featuregate"))
-
+	sharding.AddFlags(fss.FlagSet("sharding"))
 	kfs := fss.FlagSet("klog")
-	local := flag.NewFlagSet("klog", flag.ExitOnError)
-	klog.InitFlags(local)
-	kfs.AddGoFlagSet(local)
+	pkgclient.AddTimeoutControllerClientFlags(fss.FlagSet("controllerclient"))
+	utillog.AddFlags(kfs)
+	profiling.AddFlags(fss.FlagSet("profiling"))
 
 	if s.LogDebug {
 		_ = kfs.Set("v", strconv.Itoa(int(commonconfig.LogDebug)))

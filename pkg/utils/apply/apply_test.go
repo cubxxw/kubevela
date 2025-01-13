@@ -144,7 +144,7 @@ func TestAPIApplicator(t *testing.T) {
 					return tc.args.existing, tc.args.creatorErr
 				}),
 				patcher: patcherFn(func(c, m client.Object, a *applyAction) (client.Patch, error) {
-					return nil, tc.args.patcherErr
+					return client.RawPatch(types.MergePatchType, []byte(`err`)), tc.args.patcherErr
 				}),
 				c: tc.c,
 			}
@@ -574,15 +574,15 @@ func TestFilterSpecialAnn(t *testing.T) {
 	var sc = &corev1.Secret{}
 	var dp = &appsv1.Deployment{}
 	var crd = &v1.CustomResourceDefinition{}
-	assert.Equal(t, false, filterRecordForSpecial(cm))
-	assert.Equal(t, false, filterRecordForSpecial(sc))
-	assert.Equal(t, false, filterRecordForSpecial(crd))
-	assert.Equal(t, true, filterRecordForSpecial(dp))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(cm))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(sc))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(crd))
+	assert.Equal(t, true, trimLastAppliedConfigurationForSpecialResources(dp))
 
 	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "-"}
-	assert.Equal(t, false, filterRecordForSpecial(dp))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(dp))
 	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "skip"}
-	assert.Equal(t, false, filterRecordForSpecial(dp))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(dp))
 	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "xxx"}
-	assert.Equal(t, true, filterRecordForSpecial(dp))
+	assert.Equal(t, true, trimLastAppliedConfigurationForSpecialResources(dp))
 }

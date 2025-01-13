@@ -15,7 +15,7 @@ RED          := $(shell printf "\033[31m")
 GREEN        := $(shell printf "\033[32m")
 CNone        := $(shell printf "\033[0m")
 
-INFO	= echo ${TIME} ${BLUE}[ .. ]${CNone}
+INFO	= echo ${TIME} ${BLUE}[INFO]${CNone}
 WARN	= echo ${TIME} ${YELLOW}[WARN]${CNone}
 ERR		= echo ${TIME} ${RED}[FAIL]${CNone}
 OK		= echo ${TIME} ${GREEN}[ OK ]${CNone}
@@ -46,7 +46,5 @@ VELA_CORE_IMAGE      ?= vela-core:latest
 VELA_CLI_IMAGE      ?= oamdev/vela-cli:latest
 VELA_CORE_TEST_IMAGE ?= vela-core-test:$(GIT_COMMIT)
 VELA_APISERVER_IMAGE      ?= apiserver:latest
-VELA_RUNTIME_ROLLOUT_IMAGE       ?= vela-runtime-rollout:latest
-VELA_RUNTIME_ROLLOUT_TEST_IMAGE  ?= vela-runtime-rollout-test:$(GIT_COMMIT)
 RUNTIME_CLUSTER_CONFIG ?= /tmp/worker.client.kubeconfig
 RUNTIME_CLUSTER_NAME ?= worker

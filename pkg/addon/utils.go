@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -140,7 +141,7 @@ CHECKNEXT:
 			}
 		}
 
-		if app.Spec.Policies != nil && len(app.Spec.Policies) != 0 {
+		if len(app.Spec.Policies) != 0 {
 			for _, p := range app.Spec.Policies {
 				if createdDefs[fmt.Sprintf(defKeytemplate, policyMapKey, p.Type)] {
 					res = append(res, app)
@@ -256,6 +257,11 @@ func appsDependsOnAddonErrInfo(apps []v1beta1.Application) string {
 		}
 	}
 	return fmt.Sprintf("this addon is being used by: %s applications. Please delete all of them before removing.", strings.Join(appsNamespaceNameList, ", "))
+}
+
+// IsLocalRegistry checks if the registry is local
+func IsLocalRegistry(r Registry) bool {
+	return r.Name == LocalAddonRegistryName
 }
 
 // IsVersionRegistry  check the repo source if support multi-version addon
@@ -442,6 +448,7 @@ func generateAnnotation(meta *Meta) map[string]string {
 			res[kubernetesSystemRequirement] = meta.SystemRequirements.KubernetesVersion
 		}
 	}
+	res[addonSystemRequirement] = meta.Name
 	return res
 }
 
@@ -496,11 +503,24 @@ func checkBondComponentExist(u unstructured.Unstructured, app v1beta1.Applicatio
 	}
 	for _, component := range app.Spec.Components {
 		if component.Name == comp {
-			// the bond component exists, return ture
+			// the bond component exists, return true
 			return true
 		}
 	}
 	return false
+}
+
+func validateAddonPackage(addonPkg *InstallPackage) error {
+	if reflect.DeepEqual(addonPkg.Meta, Meta{}) {
+		return fmt.Errorf("the addon package doesn't have `metadata.yaml`")
+	}
+	if addonPkg.Name == "" {
+		return fmt.Errorf("`matadata.yaml` must define the name of addon")
+	}
+	if addonPkg.Version == "" {
+		return fmt.Errorf("`matadata.yaml` must define the version of addon")
+	}
+	return nil
 }
 
 // FilterDependencyRegistries will return all registries besides the target registry itself

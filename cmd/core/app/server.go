@@ -26,33 +26,37 @@ import (
 	"time"
 
 	velaclient "github.com/kubevela/pkg/controller/client"
-	"github.com/kubevela/workflow/pkg/cue/packages"
+	"github.com/kubevela/pkg/controller/sharding"
+	"github.com/kubevela/pkg/meta"
+	"github.com/kubevela/pkg/util/profiling"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/klogr"
+	"k8s.io/klog/v2/textlogger"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/cmd/core/app/hooks"
 	"github.com/oam-dev/kubevela/cmd/core/app/options"
 	"github.com/oam-dev/kubevela/pkg/auth"
-	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
+	"github.com/oam-dev/kubevela/pkg/cache"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
-	oamv1alpha2 "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2"
-	"github.com/oam-dev/kubevela/pkg/controller/utils"
+	oamv1beta1 "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/application"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/watcher"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
-	pkgutil "github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
-	"github.com/oam-dev/kubevela/pkg/utils/system"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 	oamwebhook "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev"
 	"github.com/oam-dev/kubevela/version"
@@ -68,14 +72,16 @@ var (
 func NewCoreCommand() *cobra.Command {
 	s := options.NewCoreOptions()
 	cmd := &cobra.Command{
-		Use: "vela-core",
-		Long: `The KubeVela controller manager is a daemon that embeds
-the core control loops shipped with KubeVela`,
+		Use:  "vela-core",
+		Long: `The KubeVela controller manager is a daemon that embeds the core control loops shipped with KubeVela`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-
 			return run(signals.SetupSignalHandler(), s)
 		},
 		SilenceUsage: true,
+		FParseErrWhitelist: cobra.FParseErrWhitelist{
+			// Allow unknown flags for backward-compatibility.
+			UnknownFlags: true,
+		},
 	}
 
 	fs := cmd.Flags()
@@ -83,22 +89,15 @@ the core control loops shipped with KubeVela`,
 	for _, set := range namedFlagSets.FlagSets {
 		fs.AddFlagSet(set)
 	}
-	if s.PprofAddr != "" {
-		go pkgutil.EnablePprof(s.PprofAddr, nil)
-	}
+	meta.Name = types.VelaCoreName
 
 	klog.InfoS("KubeVela information", "version", version.VelaVersion, "revision", version.GitRevision)
-	klog.InfoS("Disable capabilities", "name", s.DisableCaps)
 	klog.InfoS("Vela-Core init", "definition namespace", oam.SystemDefinitionNamespace)
 
 	return cmd
 }
 
 func run(ctx context.Context, s *options.CoreOptions) error {
-	klog.InfoS("KubeVela information", "version", version.VelaVersion, "revision", version.GitRevision)
-	klog.InfoS("Disable capabilities", "name", s.DisableCaps)
-	klog.InfoS("Vela-Core init", "definition namespace", oam.SystemDefinitionNamespace)
-
 	restConfig := ctrl.GetConfigOrDie()
 	restConfig.UserAgent = types.KubeVelaName + "/" + version.GitRevision
 	restConfig.QPS = float32(s.QPS)
@@ -109,6 +108,7 @@ func run(ctx context.Context, s *options.CoreOptions) error {
 		"QPS", restConfig.QPS,
 		"Burst", restConfig.Burst,
 	)
+	go profiling.StartProfilingServer(nil)
 
 	// wrapper the round tripper by multi cluster rewriter
 	if s.EnableClusterGateway {
@@ -127,33 +127,48 @@ func run(ctx context.Context, s *options.CoreOptions) error {
 		}
 	}
 
-	ctrl.SetLogger(klogr.New())
+	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 
 	if utilfeature.DefaultMutableFeatureGate.Enabled(features.ApplyOnce) {
 		commonconfig.ApplicationReSyncPeriod = s.InformerSyncPeriod
 	}
 
 	leaderElectionID := util.GenerateLeaderElectionID(types.KubeVelaName, s.ControllerArgs.IgnoreAppWithoutControllerRequirement)
+	leaderElectionID += sharding.GetShardIDSuffix()
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
-		Scheme:                     scheme,
-		MetricsBindAddress:         s.MetricsAddr,
-		LeaderElection:             s.EnableLeaderElection,
-		LeaderElectionNamespace:    s.LeaderElectionNamespace,
-		LeaderElectionID:           leaderElectionID,
-		Port:                       s.WebhookPort,
-		CertDir:                    s.CertDir,
-		HealthProbeBindAddress:     s.HealthAddr,
-		LeaderElectionResourceLock: s.LeaderElectionResourceLock,
-		LeaseDuration:              &s.LeaseDuration,
-		RenewDeadline:              &s.RenewDeadLine,
-		RetryPeriod:                &s.RetryPeriod,
-		SyncPeriod:                 &s.InformerSyncPeriod,
-		// SyncPeriod is configured with default value, aka. 10h. First, controller-runtime does not
-		// recommend use it as a time trigger, instead, it is expected to work for failure tolerance
-		// of controller-runtime. Additionally, set this value will affect not only application
-		// controller but also all other controllers like definition controller. Therefore, for
-		// functionalities like state-keep, they should be invented in other ways.
-		NewClient: velaclient.DefaultNewControllerClient,
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: s.MetricsAddr,
+		},
+		LeaderElection:          s.EnableLeaderElection,
+		LeaderElectionNamespace: s.LeaderElectionNamespace,
+		LeaderElectionID:        leaderElectionID,
+		WebhookServer: ctrlwebhook.NewServer(ctrlwebhook.Options{
+			Port:    s.WebhookPort,
+			CertDir: s.CertDir,
+		}),
+		HealthProbeBindAddress: s.HealthAddr,
+		LeaseDuration:          &s.LeaseDuration,
+		RenewDeadline:          &s.RenewDeadLine,
+		RetryPeriod:            &s.RetryPeriod,
+		NewClient:              velaclient.DefaultNewControllerClient,
+		NewCache: cache.BuildCache(ctx,
+			ctrlcache.Options{
+				Scheme:     scheme,
+				SyncPeriod: &s.InformerSyncPeriod,
+				// SyncPeriod is configured with default value, aka. 10h. First, controller-runtime does not
+				// recommend use it as a time trigger, instead, it is expected to work for failure tolerance
+				// of controller-runtime. Additionally, set this value will affect not only application
+				// controller but also all other controllers like definition controller. Therefore, for
+				// functionalities like state-keep, they should be invented in other ways.
+			},
+			&v1beta1.Application{}, &v1beta1.ApplicationRevision{}, &v1beta1.ResourceTracker{},
+		),
+		Client: ctrlclient.Options{
+			Cache: &ctrlclient.CacheOptions{
+				DisableFor: cache.NewResourcesToDisableCache(),
+			},
+		},
 	})
 	if err != nil {
 		klog.ErrorS(err, "Unable to create a controller manager")
@@ -165,74 +180,22 @@ func run(ctx context.Context, s *options.CoreOptions) error {
 		return err
 	}
 
-	if err := utils.CheckDisabledCapabilities(s.DisableCaps); err != nil {
-		klog.ErrorS(err, "Unable to get enabled capabilities")
-		return err
-	}
-
-	dm, err := discoverymapper.New(mgr.GetConfig())
-	if err != nil {
-		klog.ErrorS(err, "Failed to create CRD discovery client")
-		return err
-	}
-	s.ControllerArgs.DiscoveryMapper = dm
-	pd, err := packages.NewPackageDiscover(mgr.GetConfig())
-	if err != nil {
-		klog.Error(err, "Failed to create CRD discovery for CUE package client")
-		if !packages.IsCUEParseErr(err) {
+	if !sharding.EnableSharding {
+		if err = prepareRun(ctx, mgr, s); err != nil {
+			return err
+		}
+	} else {
+		if err = prepareRunInShardingMode(ctx, mgr, s); err != nil {
 			return err
 		}
 	}
-	s.ControllerArgs.PackageDiscover = pd
-
-	if s.UseWebhook {
-		klog.InfoS("Enable webhook", "server port", strconv.Itoa(s.WebhookPort))
-		oamwebhook.Register(mgr, *s.ControllerArgs)
-		if err := waitWebhookSecretVolume(s.CertDir, waitSecretTimeout, waitSecretInterval); err != nil {
-			klog.ErrorS(err, "Unable to get webhook secret")
-			return err
-		}
-	}
-
-	if err = oamv1alpha2.Setup(mgr, *s.ControllerArgs); err != nil {
-		klog.ErrorS(err, "Unable to setup the oam controller")
-		return err
-	}
-
-	if err = standardcontroller.Setup(mgr, s.DisableCaps, *s.ControllerArgs); err != nil {
-		klog.ErrorS(err, "Unable to setup the vela core controller")
-		return err
-	}
-
-	if err = multicluster.InitClusterInfo(restConfig); err != nil {
-		klog.ErrorS(err, "Init control plane cluster info")
-		return err
-	}
-
-	if driver := os.Getenv(system.StorageDriverEnv); len(driver) == 0 {
-		// first use system environment,
-		err := os.Setenv(system.StorageDriverEnv, s.StorageDriver)
-		if err != nil {
-			klog.ErrorS(err, "Unable to setup the vela core controller")
-			return err
-		}
-	}
-	klog.InfoS("Use storage driver", "storageDriver", os.Getenv(system.StorageDriverEnv))
 
 	klog.Info("Start the vela application monitor")
-	informer, err := mgr.GetCache().GetInformer(context.Background(), &v1beta1.Application{})
+	informer, err := mgr.GetCache().GetInformer(ctx, &v1beta1.Application{})
 	if err != nil {
 		klog.ErrorS(err, "Unable to get informer for application")
 	}
 	watcher.StartApplicationMetricsWatcher(informer)
-
-	klog.Info("Start the vela controller manager")
-
-	for _, hook := range []hooks.PreStartHook{hooks.NewSystemCRDValidationHook()} {
-		if err = hook.Run(ctx); err != nil {
-			return fmt.Errorf("failed to run hook %T: %w", hook, err)
-		}
-	}
 
 	if err := mgr.Start(ctx); err != nil {
 		klog.ErrorS(err, "Failed to run manager")
@@ -245,6 +208,55 @@ func run(ctx context.Context, s *options.CoreOptions) error {
 	return nil
 }
 
+func prepareRunInShardingMode(ctx context.Context, mgr manager.Manager, s *options.CoreOptions) error {
+	if sharding.IsMaster() {
+		klog.Infof("controller running in sharding mode, current shard is master")
+		if !utilfeature.DefaultMutableFeatureGate.Enabled(features.DisableWebhookAutoSchedule) {
+			go sharding.DefaultScheduler.Get().Start(ctx)
+		}
+		if err := prepareRun(ctx, mgr, s); err != nil {
+			return err
+		}
+	} else {
+		klog.Infof("controller running in sharding mode, current shard id: %s", sharding.ShardID)
+		if err := application.Setup(mgr, *s.ControllerArgs); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func prepareRun(ctx context.Context, mgr manager.Manager, s *options.CoreOptions) error {
+	if s.UseWebhook {
+		klog.InfoS("Enable webhook", "server port", strconv.Itoa(s.WebhookPort))
+		oamwebhook.Register(mgr, *s.ControllerArgs)
+		if err := waitWebhookSecretVolume(s.CertDir, waitSecretTimeout, waitSecretInterval); err != nil {
+			klog.ErrorS(err, "Unable to get webhook secret")
+			return err
+		}
+	}
+
+	if err := oamv1beta1.Setup(mgr, *s.ControllerArgs); err != nil {
+		klog.ErrorS(err, "Unable to setup the oam controller")
+		return err
+	}
+
+	if err := multicluster.InitClusterInfo(mgr.GetConfig()); err != nil {
+		klog.ErrorS(err, "Init control plane cluster info")
+		return err
+	}
+
+	klog.Info("Start the vela controller manager")
+	for _, hook := range []hooks.PreStartHook{hooks.NewSystemCRDValidationHook()} {
+		if err := hook.Run(ctx); err != nil {
+			return fmt.Errorf("failed to run hook %T: %w", hook, err)
+		}
+	}
+
+	return nil
+}
+
 // registerHealthChecks is used to create readiness&liveness probes
 func registerHealthChecks(mgr ctrl.Manager) error {
 	klog.Info("Create readiness/health check")
@@ -252,10 +264,7 @@ func registerHealthChecks(mgr ctrl.Manager) error {
 		return err
 	}
 	// TODO: change the health check to be different from readiness check
-	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
-		return err
-	}
-	return nil
+	return mgr.AddHealthzCheck("ping", healthz.Ping)
 }
 
 // waitWebhookSecretVolume waits for webhook secret ready to avoid mgr running crash

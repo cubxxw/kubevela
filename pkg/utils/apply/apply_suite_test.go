@@ -22,11 +22,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	oamcore "github.com/oam-dev/kubevela/apis/core.oam.dev"
-	oamstd "github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,7 +51,7 @@ func TestApplicator(t *testing.T) {
 	RunSpecs(t, "Applicator Suite")
 }
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	By("Bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute,
@@ -69,7 +68,6 @@ var _ = BeforeSuite(func(done Done) {
 	logf.SetLogger(zap.New(zap.UseDevMode(true), zap.WriteTo(GinkgoWriter)))
 	Expect(clientgoscheme.AddToScheme(testScheme)).Should(Succeed())
 	Expect(oamcore.AddToScheme(testScheme)).Should(Succeed())
-	Expect(oamstd.AddToScheme(testScheme)).Should(Succeed())
 
 	By("Setting up applicator")
 	rawClient, err = client.New(cfg, client.Options{Scheme: testScheme})
@@ -84,9 +82,7 @@ var _ = BeforeSuite(func(done Done) {
 		},
 	}
 	Expect(rawClient.Create(context.Background(), &applyNS)).Should(Succeed())
-
-	close(done)
-}, 300)
+})
 
 var _ = AfterSuite(func() {
 	Expect(testEnv.Stop()).Should(Succeed())

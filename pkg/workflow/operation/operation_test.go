@@ -19,12 +19,13 @@ package operation
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	kruisev1alpha1 "github.com/openkruise/rollouts/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
@@ -72,6 +73,17 @@ var _ = Describe("Kruise rollout test", func() {
 	It("Terminate workflow", func() {
 		checkApp := v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
+		checkApp.Status.Workflow = &common.WorkflowStatus{
+			Steps: []workflowv1alpha1.WorkflowStepStatus{
+				{
+					StepStatus: workflowv1alpha1.StepStatus{
+						Name:  "step1",
+						Type:  "suspend",
+						Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+					},
+				},
+			},
+		}
 		operator := NewApplicationWorkflowOperator(k8sClient, nil, checkApp.DeepCopy())
 		Expect(operator.Terminate(ctx)).Should(BeNil())
 		checkApp = v1beta1.Application{}
@@ -83,10 +95,32 @@ var _ = Describe("Kruise rollout test", func() {
 		checkApp := v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
 		operator := NewApplicationWorkflowOperator(k8sClient, nil, checkApp.DeepCopy())
-		Expect(operator.Restart(ctx, "")).Should(BeNil())
+		Expect(operator.Restart(ctx)).Should(BeNil())
 		checkApp = v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
 		Expect(checkApp.Status.Workflow).Should(BeNil())
+	})
+
+	It("Resume workflow from step", func() {
+		checkApp := v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
+		checkApp.Status.Workflow = &common.WorkflowStatus{
+			Steps: []workflowv1alpha1.WorkflowStepStatus{
+				{
+					StepStatus: workflowv1alpha1.StepStatus{
+						Name:  "step1",
+						Type:  "suspend",
+						Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Status().Update(ctx, &checkApp)).Should(BeNil())
+		operator := NewApplicationWorkflowStepOperator(k8sClient, nil, checkApp.DeepCopy())
+		Expect(operator.Resume(ctx, "step1")).Should(BeNil())
+		checkApp = v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
+		Expect(checkApp.Status.Workflow.Suspend).Should(BeEquivalentTo(false))
 	})
 
 	It("Restart workflow from step", func() {
@@ -103,7 +137,7 @@ var _ = Describe("Kruise rollout test", func() {
 			},
 		}
 		Expect(k8sClient.Status().Update(ctx, &checkApp)).Should(BeNil())
-		operator := NewApplicationWorkflowOperator(k8sClient, nil, checkApp.DeepCopy())
+		operator := NewApplicationWorkflowStepOperator(k8sClient, nil, checkApp.DeepCopy())
 		Expect(operator.Restart(ctx, "step1")).Should(BeNil())
 		checkApp = v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "opt-app"}, &checkApp)).Should(BeNil())
@@ -237,7 +271,7 @@ var myRollout = kruisev1alpha1.Rollout{
 			Canary: &kruisev1alpha1.CanaryStrategy{
 				Steps: []kruisev1alpha1.CanaryStep{
 					{
-						Weight: 30,
+						Weight: ptr.To(int32(30)),
 					},
 				},
 			},

@@ -19,7 +19,11 @@ package cli
 import (
 	"fmt"
 
+	"github.com/go-logr/logr"
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -28,7 +32,7 @@ import (
 )
 
 // NewTopCommand will create command `top` for displaying the platform overview
-func NewTopCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewTopCommand(c common.Args, order string, _ cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "top",
 		Short: "Launch UI to display the platform overview.",
@@ -43,6 +47,8 @@ func NewTopCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *co
   vela top -A
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			runewidth.DefaultCondition.EastAsianWidth = false // https://github.com/rivo/tview/issues/118
+
 			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
@@ -50,11 +56,12 @@ func NewTopCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *co
 			if AllNamespace {
 				namespace = ""
 			}
+			klog.SetLogger(logr.New(log.NullLogSink{}))
 			return launchUI(c, namespace)
 		},
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
-			types.TagCommandType:  types.TypeApp,
+			types.TagCommandType:  types.TypePlatform,
 		},
 	}
 	addNamespaceAndEnvArg(cmd)

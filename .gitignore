@@ -41,6 +41,7 @@ _tmp/
 
 references/cmd/cli/fake/source.go
 references/cmd/cli/fake/chart_source.go
+references/vela-sdk-gen/*
 charts/vela-core/crds/_.yaml
 .test_vela
 tmp/
@@ -50,6 +51,6 @@ tmp/
 # check docs
 git-page/
 
-# e2e rollout runtime image build
-runtime/rollout/e2e/tmp
 vela.json
+
+dist/

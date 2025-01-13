@@ -46,10 +46,14 @@ import (
 	innerVersion "github.com/oam-dev/kubevela/version"
 )
 
-// defaultConstraint
-const defaultConstraint = ">= 1.19, <= 1.24"
+const defaultConstraint = ">= 1.19"
 
-const kubevelaInstallerHelmRepoURL = "https://charts.kubevela.net/core/"
+const (
+	// LegacyKubeVelaInstallerHelmRepoURL is used for kubevela version < v1.9.0
+	LegacyKubeVelaInstallerHelmRepoURL = "https://charts.kubevela.net/core/"
+	// KubeVelaInstallerHelmRepoURL is used for kubevela version >= v1.9.0
+	KubeVelaInstallerHelmRepoURL = "https://kubevela.github.io/charts/"
+)
 
 // kubeVelaReleaseName release name
 const kubeVelaReleaseName = "kubevela"
@@ -105,14 +109,18 @@ func NewInstallCommand(c common.Args, order string, ioStreams util.IOStreams) *c
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := version.NewVersion(installArgs.Version)
+			if err != nil {
+				return err
+			}
 			// Step1: Download Helm Chart
 			ioStreams.Info("Installing KubeVela Core ...")
 			if installArgs.ChartFilePath == "" {
-				installArgs.ChartFilePath = getKubeVelaHelmChartRepoURL(installArgs.Version)
+				installArgs.ChartFilePath = getKubeVelaHelmChartRepoURL(v)
 			}
 			chart, err := installArgs.helmHelper.LoadCharts(installArgs.ChartFilePath, nil)
 			if err != nil {
-				return fmt.Errorf("loadding the helm chart of kubeVela control plane failure, %w", err)
+				return fmt.Errorf("loading the helm chart of kubeVela control plane failure, %w", err)
 			}
 			ioStreams.Infof("Helm Chart used for KubeVela control plane installation: %s \n", installArgs.ChartFilePath)
 
@@ -281,13 +289,14 @@ func getConstraintVersion(constraint string) string {
 	return constraint
 }
 
-func getKubeVelaHelmChartRepoURL(version string) string {
-	// Determine installer version
-	if innerVersion.IsOfficialKubeVelaVersion(version) {
-		version, _ := innerVersion.GetOfficialKubeVelaVersion(version)
-		return kubevelaInstallerHelmRepoURL + kubeVelaChartName + "-" + version + ".tgz"
+func getKubeVelaHelmChartRepoURL(ver *version.Version) string {
+	// Determine use legacy repo or new one.
+	useLegacy := innerVersion.ShouldUseLegacyHelmRepo(ver)
+	helmRepo := KubeVelaInstallerHelmRepoURL
+	if useLegacy {
+		helmRepo = LegacyKubeVelaInstallerHelmRepoURL
 	}
-	return kubevelaInstallerHelmRepoURL + kubeVelaChartName + "-" + version + ".tgz"
+	return helmRepo + kubeVelaChartName + "-" + ver.String() + ".tgz"
 }
 
 func waitKubeVelaControllerRunning(kubeClient client.Client, namespace, manifest string) error {

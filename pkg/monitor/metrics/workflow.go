@@ -32,22 +32,14 @@ var (
 )
 
 var collectorGroup = []prometheus.Collector{
-	CreateAppHandlerDurationHistogram,
-	HandleFinalizersDurationHistogram,
-	ParseAppFileDurationHistogram,
-	PrepareCurrentAppRevisionDurationHistogram,
-	ApplyAppRevisionDurationHistogram,
-	ApplyPoliciesDurationHistogram,
+	AppReconcileStageDurationHistogram,
 	StepDurationHistogram,
-	GCResourceTrackersDurationHistogram,
 	ListResourceTrackerCounter,
 	ApplicationReconcileTimeHistogram,
 	ApplyComponentTimeHistogram,
 	WorkflowFinishedTimeHistogram,
-	WorkflowInitializedCounter,
 	ApplicationPhaseCounter,
 	WorkflowStepPhaseGauge,
-	ResourceTrackerNumberGauge,
 	ClusterIsConnectedGauge,
 	ClusterWorkerNumberGauge,
 	ClusterMasterNumberGauge,

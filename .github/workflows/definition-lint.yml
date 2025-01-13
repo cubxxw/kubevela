@@ -16,32 +16,31 @@ permissions:
 
 env:
   # Common versions
-  GO_VERSION: '1.19'
+  GO_VERSION: '1.22'
 
 jobs:
   definition-doc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Setup Go
-        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Checkout
-        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
         with:
           submodules: true
 
-      - name: Setup K3d
-        uses: nolar/setup-k3d-k3s@293b8e5822a20bc0d5bcdd4826f1a665e72aba96
-        with:
-          version: v1.20
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup KinD
+        run: |
+          go install sigs.k8s.io/kind@v0.19.0
+          kind create cluster
 
       - name: Definition Doc generate check
         run: |
           go build -o docgen hack/docgen/def/gen.go
           ./docgen --type=comp --force-example-doc --path=./comp-def-check.md
           ./docgen --type=trait --force-example-doc --path=./trait-def-check.md
-          ./docgen --type=wf --force-example-doc --path=./wf-def-check.md
+          ./docgen --type=wf --force-example-doc --path=./wf-def-check.md --def-dir=./vela-templates/definitions/internal/workflowstep/
           ./docgen --type=policy --force-example-doc --path=./policy-def-check.md

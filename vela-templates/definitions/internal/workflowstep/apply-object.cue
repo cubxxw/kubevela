@@ -1,20 +1,20 @@
 import (
-	"vela/op"
+	"vela/kube"
 )
 
 "apply-object": {
 	type: "workflow-step"
-	annotations: {}
-	labels: {
-		"ui-hidden": "true"
+	annotations: {
+		"category": "Resource Management"
 	}
+	labels: {}
 	description: "Apply raw kubernetes objects for your workflow steps"
 }
 template: {
-	apply: op.#Apply & {
-		value:   parameter.value
-		cluster: parameter.cluster
+	apply: kube.#Apply & {
+		$params: parameter
 	}
+
 	parameter: {
 		// +usage=Specify Kubernetes native resource object to be applied
 		value: {...}

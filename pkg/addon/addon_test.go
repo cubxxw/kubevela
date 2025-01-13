@@ -33,6 +33,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-github/v32/github"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/multierr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -266,7 +267,7 @@ func TestRenderViews(t *testing.T) {
 		DisableControlPlane: false,
 		RuntimeCluster:      false,
 	}
-	views, err := RenderViews(&addonDeployToRuntime)
+	views, err := RenderViews(context.Background(), &addonDeployToRuntime)
 	assert.NoError(t, err)
 	assert.Equal(t, len(views), 2)
 
@@ -296,6 +297,41 @@ func TestRenderK8sObjects(t *testing.T) {
 	assert.Equal(t, len(app.Spec.Components), 1)
 	comp := app.Spec.Components[0]
 	assert.Equal(t, comp.Type, "k8s-objects")
+}
+
+func TestGetClusters(t *testing.T) {
+	// string array test
+	args := map[string]interface{}{
+		types.ClustersArg: []string{
+			"cluster1", "cluster2",
+		},
+	}
+	clusters := getClusters(args)
+	assert.Equal(t, clusters, []string{
+		"cluster1", "cluster2",
+	})
+	// interface array test
+	args1 := map[string]interface{}{
+		types.ClustersArg: []interface{}{
+			"cluster3", "cluster4",
+		},
+	}
+	clusters1 := getClusters(args1)
+	assert.Equal(t, clusters1, []string{
+		"cluster3", "cluster4",
+	})
+	// no cluster arg test
+	args2 := map[string]interface{}{
+		"anyargkey": "anyargvalue",
+	}
+	clusters2 := getClusters(args2)
+	assert.Nil(t, clusters2)
+	// other type test
+	args3 := map[string]interface{}{
+		types.ClustersArg: "cluster5",
+	}
+	clusters3 := getClusters(args3)
+	assert.Nil(t, clusters3)
 }
 
 func TestGetAddonStatus(t *testing.T) {
@@ -388,6 +424,21 @@ func TestGetAddonVersionMeetSystemRequirement(t *testing.T) {
 	assert.Equal(t, version, "1.0.0")
 	version = i.getAddonVersionMeetSystemRequirement("not-exist")
 	assert.Equal(t, version, "")
+}
+
+func TestHasNotCoveredClusters(t *testing.T) {
+	// case1: clusterArgValue can cover addonClusters
+	cav := []interface{}{"local"}
+	addonClusters := []string{"local"}
+	notCovered, mergedClusters := hasNotCoveredClusters(cav, addonClusters)
+	assert.False(t, notCovered)
+	assert.Equal(t, []string{"local"}, mergedClusters)
+
+	// case2: clusterArgValue can not cover addonClusters
+	addonClusters = []string{"local", "c1"}
+	notCovered1, mergedClusters1 := hasNotCoveredClusters(cav, addonClusters)
+	assert.True(t, notCovered1)
+	assert.Equal(t, addonClusters, mergedClusters1)
 }
 
 var baseAddon = InstallPackage{
@@ -1056,7 +1107,7 @@ func TestCheckEnableAddonErrorWhenMissMatch(t *testing.T) {
 	version2.VelaVersion = "v1.3.0"
 	i := InstallPackage{Meta: Meta{SystemRequirements: &SystemRequirements{VelaVersion: ">=1.4.0"}}}
 	installer := &Installer{}
-	_, err := installer.enableAddon(&i)
+	_, err := installer.enableAddon(context.Background(), &i)
 	assert.Equal(t, errors.As(err, &VersionUnMatchError{}), true)
 }
 
@@ -1084,13 +1135,16 @@ func TestPackageAddon(t *testing.T) {
 }
 
 func TestGenerateAnnotation(t *testing.T) {
-	meta := Meta{SystemRequirements: &SystemRequirements{
-		VelaVersion:       ">1.4.0",
-		KubernetesVersion: ">1.20.0",
-	}}
+	meta := Meta{
+		Name: "test-addon",
+		SystemRequirements: &SystemRequirements{
+			VelaVersion:       ">1.4.0",
+			KubernetesVersion: ">1.20.0",
+		}}
 	res := generateAnnotation(&meta)
 	assert.Equal(t, res[velaSystemRequirement], ">1.4.0")
 	assert.Equal(t, res[kubernetesSystemRequirement], ">1.20.0")
+	assert.Equal(t, res[addonSystemRequirement], meta.Name)
 
 	meta = Meta{}
 	meta.SystemRequirements = &SystemRequirements{KubernetesVersion: ">=1.20.1"}
@@ -1206,4 +1260,311 @@ func TestGenerateConflictError(t *testing.T) {
 	strings.Contains(err.Error(), "in this addon already exist in fluxcd")
 
 	assert.NoError(t, produceDefConflictError(map[string]string{}))
+}
+
+// write a test for sortVersionsDescending
+func TestSortVersionsDescending(t *testing.T) {
+	testCases := []struct {
+		caseName string
+		versions []string
+		res      []string
+	}{
+		{
+			caseName: "empty list",
+			versions: []string{},
+			res:      nil,
+		},
+		{
+			caseName: "one version",
+			versions: []string{"1.2.3"},
+			res:      []string{"1.2.3"},
+		},
+		{
+			caseName: "multiple versions",
+			versions: []string{"0.1.0", "1.2.3", "1.0.0", "1.1.0"},
+			res:      []string{"1.2.3", "1.1.0", "1.0.0", "0.1.0"},
+		},
+		{
+			caseName: "various SemVer formats",
+			versions: []string{
+				"1.2.3", "1.2.3-rc.1", "1.2.3-rc.2", "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-1", "1.0.0+1",
+			},
+			res: []string{"1.2.3", "1.2.3-rc.2", "1.2.3-rc.1", "1.0.0+1", "1.0.0-alpha.1", "1.0.0-alpha", "1.0.0-1"},
+		},
+		{
+			caseName: "SemVer-ish versions",
+			versions: []string{"v1.0.0", "1.1", "2", "1-2", "1+2"},
+			res:      []string{"2.0.0", "1.1.0", "1.0.0", "1.0.0+2", "1.0.0-2"},
+		},
+		{
+			caseName: "list with some non-SemVer-ish versions",
+			versions: []string{"2.0.0", "1a", "b", "1,2", "1.0.0"},
+			res:      []string{"2.0.0", "1.0.0"},
+		},
+	}
+	for _, tc := range testCases {
+		res := sortVersionsDescending(tc.versions)
+		assert.Equal(t, tc.res, res, tc.caseName)
+	}
+}
+
+func TestValidateAddonDependencies(t *testing.T) {
+	singletonMap := func(addonName string, addonVersions []string) itemInfoMap {
+		res := make(itemInfoMap)
+		res[addonName] = ItemInfo{Name: addonName, AvailableVersions: addonVersions}
+		return res
+	}
+
+	testCases := []struct {
+		caseName        string
+		installedAddons itemInfoMap
+		availableAddons itemInfoMap
+		addon           *InstallPackage
+		err             error
+	}{
+		{
+			caseName: "addon with no dependencies",
+
+			addon: &InstallPackage{},
+			err:   nil,
+		},
+		{
+			caseName: "dependency with version, name matches available dependency, version available",
+
+			availableAddons: singletonMap("addon1", []string{"1.0.0", "1.2.3", "1.3.0", "2.0.0"}),
+			addon: &InstallPackage{
+				Meta: Meta{
+					Name: "addon2",
+					Dependencies: []*Dependency{
+						{
+							Name:    "addon1",
+							Version: ">=1.2.3, <2.0.0",
+						},
+					},
+				},
+			},
+			err: nil,
+		},
+		{
+			caseName: "multiple validation errors",
+
+			addon: &InstallPackage{
+				Meta: Meta{
+					Name: "addon4",
+					Dependencies: []*Dependency{
+						{
+							Name:    "addon1",
+							Version: ">=1.2.3, <2.0.0",
+						},
+						{
+							Name:    "addon2",
+							Version: ">=1.2.3, <2.0.0",
+						},
+						{
+							Name:    "addon3",
+							Version: ">=1.2.3, <2.0.0",
+						},
+					},
+				},
+			},
+			err: multierr.Combine(
+				fmt.Errorf("addon addon4 has unresolvable dependency addon1: %w", errors.New("no available addon with name addon1")),
+				fmt.Errorf("addon addon4 has unresolvable dependency addon2: %w", errors.New("no available addon with name addon2")),
+				fmt.Errorf("addon addon4 has unresolvable dependency addon3: %w", errors.New("no available addon with name addon3")),
+			),
+		},
+	}
+	for _, tc := range testCases {
+		err := validateAddonDependencies(tc.addon, tc.installedAddons, tc.availableAddons)
+		assert.Equal(t, tc.err, err, tc.caseName)
+	}
+}
+
+func TestCalculateDependencyVersionToInstall(t *testing.T) {
+	singletonMap := func(addonName string, addonVersions []string) itemInfoMap {
+		res := make(itemInfoMap)
+		res[addonName] = ItemInfo{Name: addonName, AvailableVersions: addonVersions}
+		return res
+	}
+
+	testCases := []struct {
+		caseName        string
+		dep             Dependency
+		installedAddons itemInfoMap
+		availableAddons itemInfoMap
+		res             string
+		err             error
+	}{
+		{
+			caseName: "dependency without name",
+
+			err: errors.New("dependency name cannot be empty"),
+		},
+		{
+			caseName: "dependency without version, name matches available dependency",
+
+			dep:             Dependency{Name: "addon1"},
+			availableAddons: singletonMap("addon1", []string{"1.0.0", "1.2.3", "1.3.0", "2.0.0"}),
+			res:             "2.0.0",
+		},
+		{
+			caseName: "dependency without version, name matches installed dependency",
+
+			dep:             Dependency{Name: "addon1"},
+			installedAddons: singletonMap("addon1", []string{"1.2.3"}),
+			res:             "1.2.3",
+		},
+		{
+			caseName: "dependency with version, name matches available dependency, version available",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			availableAddons: singletonMap("addon1", []string{"1.0.0", "1.2.3", "1.3.0", "2.0.0"}),
+			res:             "1.3.0",
+		},
+		{
+			caseName: "dependency with version, name does not match available dependency",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			availableAddons: singletonMap("addon2", []string{"1.0.0", "1.2.3", "1.3.0", "2.0.0"}),
+			err:             errors.New("no available addon with name addon1"),
+		},
+		{
+			caseName: "dependency with version, name matches available dependency, version not available",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			availableAddons: singletonMap("addon1", []string{"1.0.0", "1.2.0", "2.0.0"}),
+			err:             errors.New("no available addon with name addon1 and version '>=1.2.3, <2.0.0', available versions [1.0.0 1.2.0 2.0.0]"),
+		},
+		{
+			caseName: "dependency with version, name matches installed dependency",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			installedAddons: singletonMap("addon1", []string{"1.2.3"}),
+			res:             "1.2.3",
+		},
+		{
+			caseName: "dependency with version, name matches installed dependency, version mismatch",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			installedAddons: singletonMap("addon1", []string{"1.2.0"}),
+			err:             errors.New("addon addon1 version '>=1.2.3, <2.0.0' does not match installed version '1.2.0'"),
+		},
+		{
+			caseName: "dependency with version, name matches installed and available dependency",
+
+			dep:             Dependency{Name: "addon1", Version: ">=1.2.3, <2.0.0"},
+			installedAddons: singletonMap("addon1", []string{"1.2.3"}),
+			availableAddons: singletonMap("addon1", []string{"1.0.0", "1.2.3", "1.3.0", "2.0.0"}),
+			res:             "1.2.3",
+		},
+	}
+	for _, tc := range testCases {
+		res, err := calculateDependencyVersionToInstall(tc.dep, tc.installedAddons, tc.availableAddons)
+		assert.Equal(t, tc.res, res, tc.caseName)
+		assert.Equal(t, tc.err, err, tc.caseName)
+	}
+}
+
+func TestListAvailableAddons(t *testing.T) {
+	registries := []ItemInfoLister{
+		&AddonInfoListerMock{
+			expectedData: itemInfoMap{
+				"addon1": {
+					Name:              "addon1",
+					AvailableVersions: []string{"1.0.0"},
+				},
+				"addon2": {
+					Name:              "addon2",
+					AvailableVersions: []string{"2.0.0"},
+				},
+			},
+		},
+		&AddonInfoListerMock{
+			expectedData: itemInfoMap{
+				"addon1": {
+					Name:              "addon1",
+					AvailableVersions: []string{"1.2.0", "1.1.0"},
+				},
+				"addon3": {
+					Name:              "addon3",
+					AvailableVersions: []string{"3.0.0"},
+				},
+			},
+		},
+	}
+	res, err := listAvailableAddons(registries)
+
+	assert.NoError(t, err)
+	expected := itemInfoMap{
+		// addon1 versions are merged
+		"addon1": {
+			Name:              "addon1",
+			AvailableVersions: []string{"1.2.0", "1.1.0", "1.0.0"},
+		},
+		"addon2": {
+			Name:              "addon2",
+			AvailableVersions: []string{"2.0.0"},
+		},
+		"addon3": {
+			Name:              "addon3",
+			AvailableVersions: []string{"3.0.0"},
+		},
+	}
+	assert.Equal(t, expected, res)
+}
+
+type AddonInfoListerMock struct {
+	expectedData itemInfoMap
+	expectedErr  error
+}
+
+func (a *AddonInfoListerMock) ListAddonInfo() (map[string]ItemInfo, error) {
+	return a.expectedData, a.expectedErr
+}
+
+func TestListInstalledAddons(t *testing.T) {
+	// Create some KubeVela addons
+	k8sClient := fake.NewClientBuilder().Build()
+	k8sClient.Create(context.Background(), &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "addon-addon1",
+			Namespace: types.DefaultKubeVelaNS,
+			Labels: map[string]string{
+				oam.LabelAddonName:    "addon1",
+				oam.LabelAddonVersion: "1.0.0",
+			},
+		},
+	})
+	k8sClient.Create(context.Background(), &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "addon-addon2",
+			Namespace: types.DefaultKubeVelaNS,
+			Labels: map[string]string{
+				oam.LabelAddonName:    "addon2",
+				oam.LabelAddonVersion: "2.0.0",
+			},
+		},
+	})
+	// create an app that's not an addon
+	k8sClient.Create(context.Background(), &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "app1",
+			Namespace: types.DefaultKubeVelaNS,
+		},
+	})
+
+	res, err := listInstalledAddons(context.Background(), k8sClient)
+
+	assert.NoError(t, err)
+	expected := itemInfoMap{
+		"addon1": {
+			Name:              "addon1",
+			AvailableVersions: []string{"1.0.0"},
+		},
+		"addon2": {
+			Name:              "addon2",
+			AvailableVersions: []string{"2.0.0"},
+		},
+	}
+	assert.Equal(t, expected, res)
 }

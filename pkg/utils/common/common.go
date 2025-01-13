@@ -36,14 +36,12 @@ import (
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/encoding/openapi"
 	"github.com/AlecAivazis/survey/v2"
-	cloudshellv1alpha1 "github.com/cloudtty/cloudtty/pkg/apis/cloudshell/v1alpha1"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	cuexv1alpha1 "github.com/kubevela/pkg/apis/cue/v1alpha1"
 	"github.com/oam-dev/terraform-config-inspect/tfconfig"
 	kruise "github.com/openkruise/kruise-api/apps/v1alpha1"
 	kruisev1alpha1 "github.com/openkruise/rollouts/api/v1alpha1"
-	certmanager "github.com/wonderflow/cert-manager-api/pkg/apis/certmanager/v1"
 	yamlv3 "gopkg.in/yaml.v3"
-	istioclientv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	v1 "k8s.io/api/core/v1"
 	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -57,20 +55,16 @@ import (
 	ocmworkv1 "open-cluster-management.io/api/work/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	"sigs.k8s.io/yaml"
 
-	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
 	clustergatewayapi "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	terraformapiv1 "github.com/oam-dev/terraform-controller/api/v1beta1"
 	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta2"
 
-	"github.com/kubevela/workflow/pkg/cue/packages"
+	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
 	oamcore "github.com/oam-dev/kubevela/apis/core.oam.dev"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-	oamstandard "github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/types"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	"github.com/oam-dev/kubevela/pkg/cue/process"
@@ -80,22 +74,6 @@ import (
 var (
 	// Scheme defines the default KubeVela schema
 	Scheme = k8sruntime.NewScheme()
-	// forbidRedirectFunc general check func for http redirect response
-	forbidRedirectFunc = func(req *http.Request, via []*http.Request) error {
-		return errors.New("got a redirect response which is forbidden")
-	}
-	//nolint:gosec
-	// insecureHTTPClient insecure http client
-	insecureHTTPClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, CheckRedirect: forbidRedirectFunc}
-	// forbidRedirectClient is a http client forbid redirect http request
-	forbidRedirectClient = &http.Client{CheckRedirect: forbidRedirectFunc}
-)
-
-const (
-	// AddonObservabilityApplication is the application name for Addon Observability
-	AddonObservabilityApplication = "addon-observability"
-	// AddonObservabilityGrafanaSvc is grafana service name for Addon Observability
-	AddonObservabilityGrafanaSvc = "grafana"
 )
 
 // CreateCustomNamespace display the create namespace message
@@ -106,9 +84,6 @@ func init() {
 	_ = apiregistrationv1.AddToScheme(Scheme)
 	_ = crdv1.AddToScheme(Scheme)
 	_ = oamcore.AddToScheme(Scheme)
-	_ = oamstandard.AddToScheme(Scheme)
-	_ = istioclientv1beta1.AddToScheme(Scheme)
-	_ = certmanager.AddToScheme(Scheme)
 	_ = kruise.AddToScheme(Scheme)
 	_ = terraformapi.AddToScheme(Scheme)
 	_ = terraformapiv1.AddToScheme(Scheme)
@@ -118,20 +93,20 @@ func init() {
 	_ = clustergatewayapi.AddToScheme(Scheme)
 	_ = metricsV1beta1api.AddToScheme(Scheme)
 	_ = kruisev1alpha1.AddToScheme(Scheme)
-	_ = prismclusterv1alpha1.AddToScheme(Scheme)
-	_ = cloudshellv1alpha1.AddToScheme(Scheme)
-	_ = gatewayv1alpha2.AddToScheme(Scheme)
+	_ = gatewayv1beta1.AddToScheme(Scheme)
+	_ = workflowv1alpha1.AddToScheme(Scheme)
+	_ = cuexv1alpha1.AddToScheme(Scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
 // HTTPOption define the https options
 type HTTPOption struct {
-	Username        string
-	Password        string
-	CaFile          string
-	CertFile        string
-	KeyFile         string
-	InsecureSkipTLS bool
+	Username        string `json:"username,omitempty"`
+	Password        string `json:"password,omitempty"`
+	CaFile          string `json:"caFile,omitempty"`
+	CertFile        string `json:"certFile,omitempty"`
+	KeyFile         string `json:"keyFile,omitempty"`
+	InsecureSkipTLS bool   `json:"insecureSkipTLS,omitempty"`
 }
 
 // InitBaseRestConfig will return reset config for create controller runtime client
@@ -149,23 +124,6 @@ func InitBaseRestConfig() (Args, error) {
 	return args, nil
 }
 
-// globalClient will be a client for whole command lifecycle
-var globalClient client.Client
-
-// SetGlobalClient will set a client for one cli command
-func SetGlobalClient(clt client.Client) error {
-	globalClient = clt
-	return nil
-}
-
-// GetClient will K8s client in args
-func GetClient() (client.Client, error) {
-	if globalClient != nil {
-		return globalClient, nil
-	}
-	return nil, errors.New("client not set, call SetGlobalClient first")
-}
-
 // HTTPGetResponse use HTTP option and default client to send request and get raw response
 func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.Response, error) {
 	// Change NewRequest to NewRequestWithContext and pass context it
@@ -176,12 +134,12 @@ func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.R
 	if err != nil {
 		return nil, err
 	}
-	httpClient := forbidRedirectClient
+	httpClient := &http.Client{}
 	if opts != nil && len(opts.Username) != 0 && len(opts.Password) != 0 {
 		req.SetBasicAuth(opts.Username, opts.Password)
 	}
 	if opts != nil && opts.InsecureSkipTLS {
-		httpClient = insecureHTTPClient
+		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // nolint
 	}
 	// if specify the caFile, we cannot re-use the default httpClient, so create a new one.
 	if opts != nil && (len(opts.CaFile) != 0 || len(opts.KeyFile) != 0 || len(opts.CertFile) != 0) {
@@ -204,7 +162,7 @@ func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.R
 		}
 		tr.TLSClientConfig = tlsConfig
 		defer tr.CloseIdleConnections()
-		httpClient = &http.Client{Transport: &tr, CheckRedirect: forbidRedirectFunc}
+		httpClient.Transport = &tr
 	}
 	return httpClient.Do(req)
 }
@@ -244,21 +202,18 @@ func HTTPGetKubernetesObjects(ctx context.Context, url string) ([]*unstructured.
 }
 
 // GetCUEParameterValue converts definitions to cue format
-func GetCUEParameterValue(cueStr string, pd *packages.PackageDiscover) (cue.Value, error) {
-	template, err := value.NewValue(cueStr+velacue.BaseTemplate, pd, "")
-	if err != nil {
-		return cue.Value{}, err
-	}
-	val, err := template.LookupValue(process.ParameterFieldName)
-	if err != nil || !val.CueValue().Exists() {
+func GetCUEParameterValue(cueStr string) (cue.Value, error) {
+	template := cuecontext.New().CompileString(cueStr + velacue.BaseTemplate)
+	val := template.LookupPath(cue.ParsePath(process.ParameterFieldName))
+	if !val.Exists() {
 		return cue.Value{}, velacue.ErrParameterNotExist
 	}
 
-	return val.CueValue(), nil
+	return val, nil
 }
 
 // GenOpenAPI generates OpenAPI json schema from cue.Instance
-func GenOpenAPI(val *value.Value) (b []byte, err error) {
+func GenOpenAPI(val cue.Value) (b []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("invalid cue definition to generate open api: %v", r)
@@ -266,8 +221,8 @@ func GenOpenAPI(val *value.Value) (b []byte, err error) {
 			return
 		}
 	}()
-	if val.CueValue().Err() != nil {
-		return nil, val.CueValue().Err()
+	if val.Err() != nil {
+		return nil, val.Err()
 	}
 	paramOnlyVal, err := RefineParameterValue(val)
 	if err != nil {
@@ -283,26 +238,57 @@ func GenOpenAPI(val *value.Value) (b []byte, err error) {
 	return out.Bytes(), nil
 }
 
+// GenOpenAPIWithCueX generates OpenAPI json schema from cue.Instance
+func GenOpenAPIWithCueX(val cue.Value) (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("invalid cue definition to generate open api: %v", r)
+			debug.PrintStack()
+			return
+		}
+	}()
+	if val.Err() != nil {
+		return nil, val.Err()
+	}
+	paramOnlyVal := FillParameterDefinitionFieldIfNotExist(val)
+	defaultConfig := &openapi.Config{ExpandReferences: true}
+	b, err = openapi.Gen(paramOnlyVal, defaultConfig)
+	if err != nil {
+		return nil, err
+	}
+	var out = &bytes.Buffer{}
+	_ = json.Indent(out, b, "", "   ")
+	return out.Bytes(), nil
+}
+
 // RefineParameterValue refines cue value to merely include `parameter` identifier
-func RefineParameterValue(val *value.Value) (cue.Value, error) {
-	defaultValue := cuecontext.New().CompileString("#parameter: {}")
+func RefineParameterValue(val cue.Value) (cue.Value, error) {
+	cuectx := val.Context()
+	defaultValue := cuectx.CompileString("#parameter: {}")
 	parameterPath := cue.MakePath(cue.Def(process.ParameterFieldName))
-	v, err := val.MakeValue("{}")
-	if err != nil {
-		return defaultValue, err
-	}
-	paramVal, err := val.LookupValue(process.ParameterFieldName)
-	if err != nil {
-		// nolint:nilerr
-		return defaultValue, nil
-	}
-	switch k := paramVal.CueValue().IncompleteKind(); k {
+	v := cuectx.CompileString("{}")
+	paramVal := val.LookupPath(cue.ParsePath(process.ParameterFieldName))
+	switch k := paramVal.IncompleteKind(); k {
 	case cue.BottomKind:
 		return defaultValue, nil
 	default:
-		paramOnlyVal := v.CueValue().FillPath(parameterPath, paramVal.CueValue())
+		paramOnlyVal := v.FillPath(parameterPath, paramVal)
 		return paramOnlyVal, nil
 	}
+}
+
+// FillParameterDefinitionFieldIfNotExist refines cue value to merely include `parameter` identifier
+func FillParameterDefinitionFieldIfNotExist(val cue.Value) cue.Value {
+	defaultValue := cuecontext.New().CompileString("#parameter: {}")
+	defPath := cue.ParsePath("#" + process.ParameterFieldName)
+	if paramVal := val.LookupPath(cue.ParsePath(process.ParameterFieldName)); paramVal.Exists() {
+		if paramVal.IncompleteKind() == cue.BottomKind {
+			return defaultValue
+		}
+		paramOnlyVal := val.Context().CompileString("{}").FillPath(defPath, paramVal)
+		return paramOnlyVal
+	}
+	return defaultValue
 }
 
 // RealtimePrintCommandOutput prints command output in real time
@@ -323,48 +309,7 @@ func RealtimePrintCommandOutput(cmd *exec.Cmd, logFile string) error {
 	}
 	cmd.Stdout = writer
 	cmd.Stderr = writer
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ResourceLocation indicates the resource location
-type ResourceLocation struct {
-	Cluster   string
-	Namespace string
-}
-
-type clusterObjectReferenceFilter func(common.ClusterObjectReference) bool
-
-var resourceNameClusterObjectReferenceFilter = func(resourceName []string) clusterObjectReferenceFilter {
-	return func(reference common.ClusterObjectReference) bool {
-		if len(resourceName) == 0 {
-			return true
-		}
-		for _, r := range resourceName {
-			if r == reference.Name {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-func filterResource(inputs []common.ClusterObjectReference, filters ...clusterObjectReferenceFilter) (outputs []common.ClusterObjectReference) {
-	for _, item := range inputs {
-		flag := true
-		for _, filter := range filters {
-			if !filter(item) {
-				flag = false
-				break
-			}
-		}
-		if flag {
-			outputs = append(outputs, item)
-		}
-	}
-	return
+	return cmd.Run()
 }
 
 // AskToChooseOneNamespace ask for choose one namespace as env
@@ -401,29 +346,6 @@ func AskToChooseOneNamespace(c client.Client, envMeta *types.EnvMeta) error {
 		}
 	}
 	return nil
-}
-
-func filterClusterObjectRefFromAddonObservability(resources []common.ClusterObjectReference) []common.ClusterObjectReference {
-	var observabilityResources []common.ClusterObjectReference
-	for _, res := range resources {
-		if res.Namespace == types.DefaultKubeVelaNS && res.Name == AddonObservabilityGrafanaSvc {
-			res.Kind = "Service"
-			res.APIVersion = "v1"
-			observabilityResources = append(observabilityResources, res)
-		}
-	}
-	resources = observabilityResources
-	return resources
-}
-
-func removeEmptyString(items []string) []string {
-	r := []string{}
-	for _, i := range items {
-		if i != "" {
-			r = append(r, i)
-		}
-	}
-	return r
 }
 
 // ReadYamlToObject will read a yaml K8s object to runtime.Object
@@ -492,14 +414,4 @@ func NewK8sClient() (client.Client, error) {
 		return nil, err
 	}
 	return k8sClient, nil
-}
-
-// FilterObjectsByCondition filter object slices by condition function
-func FilterObjectsByCondition(objs []*unstructured.Unstructured, filter func(unstructured2 *unstructured.Unstructured) bool) (outs []*unstructured.Unstructured) {
-	for _, obj := range objs {
-		if filter(obj) {
-			outs = append(outs, obj)
-		}
-	}
-	return
 }

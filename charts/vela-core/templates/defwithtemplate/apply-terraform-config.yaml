@@ -4,9 +4,9 @@ apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
   annotations:
+    custom.definition.oam.dev/category: Terraform
     definition.oam.dev/alias: ""
     definition.oam.dev/description: Apply terraform configuration in the step
-    definition.oam.dev/example-url: https://raw.githubusercontent.com/kubevela/workflow/main/examples/workflow-run/apply-terraform-resource.yaml
   name: apply-terraform-config
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:
@@ -14,11 +14,12 @@ spec:
     cue:
       template: |
         import (
-        	"vela/op"
+        	"vela/kube"
+        	"vela/builtin"
         )
 
-        apply: op.#Apply & {
-        	value: {
+        apply: kube.#Apply & {
+        	$params: value: {
         		apiVersion: "terraform.core.oam.dev/v1beta2"
         		kind:       "Configuration"
         		metadata: {
@@ -53,8 +54,10 @@ spec:
         		}
         	}
         }
-        check: op.#ConditionalWait & {
-        	continue: apply.value.status != _|_ && apply.value.status.apply != _|_ && apply.value.status.apply.state == "Available"
+        check: builtin.#ConditionalWait & {
+        	if apply.$returns.value.status != _|_ if apply.$returns.value.status.apply != _|_ {
+        		$params: continue: apply.$returns.value.status.apply.state == "Available"
+        	}
         }
         parameter: {
         	// +usage=specify the source of the terraform configuration
@@ -85,7 +88,7 @@ spec:
         	region?: string
         	// +usage=the envs for job
         	jobEnv?: {...}
-        	// +usae=forceDelete will force delete Configuration no matter which state it is or whether it has provisioned some resources
+        	// +usage=forceDelete will force delete Configuration no matter which state it is or whether it has provisioned some resources
         	forceDelete: *false | bool
         }
 

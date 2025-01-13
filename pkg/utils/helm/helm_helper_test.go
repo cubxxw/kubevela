@@ -18,9 +18,12 @@ package helm
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/google/go-cmp/cmp"
@@ -35,6 +38,8 @@ import (
 )
 
 var _ = Describe("Test helm helper", func() {
+
+	ctx := context.Background()
 
 	It("Test LoadCharts ", func() {
 		helper := NewHelper()
@@ -109,14 +114,43 @@ var _ = Describe("Test helm helper", func() {
 		helper := NewHelper()
 		versions, err := helper.ListVersions("./testdata", "autoscalertrait", true, nil)
 		Expect(err).Should(BeNil())
-		Expect(cmp.Diff(len(versions), 2)).Should(BeEmpty())
+		Expect(cmp.Diff(len(versions), 3)).Should(BeEmpty())
 	})
 
 	It("Test getValues from chart", func() {
 		helper := NewHelper()
-		values, err := helper.GetValuesFromChart("./testdata", "autoscalertrait", "0.2.0", true, nil)
+		values, err := helper.GetValuesFromChart("./testdata", "autoscalertrait", "0.2.0", true, "helm", nil)
 		Expect(err).Should(BeNil())
-		Expect(values).ShouldNot(BeEmpty())
+		Expect(values).ShouldNot(BeNil())
+	})
+
+	It("Test getValues from chart with uncompleted index.yaml url", func() {
+		helper := NewHelper()
+		values, err := helper.GetValuesFromChart("./testdata", "autoscalertrait", "0.2.0_p1", true, "helm", nil)
+		Expect(err).Should(BeNil())
+		Expect(values).ShouldNot(BeNil())
+	})
+
+	It("Test validate helm repo", func() {
+		helper := NewHelper()
+		helmRepo := &Repository{
+			URL: "https://charts.kubevela.net/core",
+		}
+		ok, err := helper.ValidateRepo(ctx, helmRepo)
+		Expect(err).Should(BeNil())
+		Expect(ok).Should(BeTrue())
+	})
+
+	It("Test validate the corrupt helm repo", func() {
+		helper := NewHelper()
+		svr := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			_, _ = fmt.Fprintf(writer, "corrupted")
+		}))
+		defer svr.Close()
+		helmRepo := &Repository{URL: svr.URL}
+		ok, err := helper.ValidateRepo(ctx, helmRepo)
+		Expect(err).To(HaveOccurred())
+		Expect(ok).Should(BeFalse())
 	})
 })
 

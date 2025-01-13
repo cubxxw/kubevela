@@ -17,10 +17,13 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -60,10 +63,12 @@ func TestWorkflowSuspend(t *testing.T) {
 
 	testCases := map[string]struct {
 		app         *v1beta1.Application
-		expectedErr error
+		expected    *v1beta1.Application
+		step        string
+		expectedErr string
 	}{
 		"no app name specified": {
-			expectedErr: fmt.Errorf("please specify the name of application/workflow"),
+			expectedErr: "please specify the name of application/workflow",
 		},
 		"workflow not running": {
 			app: &v1beta1.Application{
@@ -74,7 +79,7 @@ func TestWorkflowSuspend(t *testing.T) {
 				Spec:   workflowSpec,
 				Status: common.AppStatus{},
 			},
-			expectedErr: fmt.Errorf("the workflow in application workflow-not-running is not start"),
+			expectedErr: "the workflow in application workflow-not-running is not start",
 		},
 		"suspend successfully": {
 			app: &v1beta1.Application{
@@ -89,6 +94,204 @@ func TestWorkflowSuspend(t *testing.T) {
 					},
 				},
 			},
+			expected: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workflow",
+					Namespace: "test",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: true,
+					},
+				},
+			},
+		},
+		"step not found": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "step-not-found",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: false,
+					},
+				},
+			},
+			step:        "not-found",
+			expectedErr: "can not find",
+		},
+		"suspend all": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "suspend-all",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+									},
+								},
+							},
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step2",
+									Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub2",
+										Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &v1beta1.Application{
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: true,
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+									},
+								},
+							},
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step2",
+									Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub2",
+										Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"suspend specific step": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "suspend-step",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &v1beta1.Application{
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: true,
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			step: "step1",
+		},
+		"suspend specific sub step": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "suspend-sub-step",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: &v1beta1.Application{
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: true,
+						Steps: []workflowv1alpha1.WorkflowStepStatus{
+							{
+								StepStatus: workflowv1alpha1.StepStatus{
+									Name:  "step1",
+									Phase: workflowv1alpha1.WorkflowStepPhaseRunning,
+								},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{
+										Name:  "sub1",
+										Phase: workflowv1alpha1.WorkflowStepPhaseSuspending,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			step: "sub1",
 		},
 	}
 
@@ -104,7 +307,7 @@ func TestWorkflowSuspend(t *testing.T) {
 			if tc.app != nil {
 				err := client.Create(ctx, tc.app)
 				r.NoError(err)
-
+				cmdArgs := []string{tc.app.Name}
 				if tc.app.Namespace != corev1.NamespaceDefault {
 					err := client.Create(ctx, &corev1.Namespace{
 						ObjectMeta: metav1.ObjectMeta{
@@ -112,14 +315,17 @@ func TestWorkflowSuspend(t *testing.T) {
 						},
 					})
 					r.NoError(err)
+					cmdArgs = append(cmdArgs, "-n", tc.app.Namespace)
 					cmd.SetArgs([]string{tc.app.Name, "-n", tc.app.Namespace})
-				} else {
-					cmd.SetArgs([]string{tc.app.Name})
 				}
+				if tc.step != "" {
+					cmdArgs = append(cmdArgs, "--step", tc.step)
+				}
+				cmd.SetArgs(cmdArgs)
 			}
 			err = cmd.Execute()
-			if tc.expectedErr != nil {
-				r.Equal(tc.expectedErr, err)
+			if tc.expectedErr != "" {
+				r.Contains(err.Error(), tc.expectedErr)
 				return
 			}
 			r.NoError(err)
@@ -131,6 +337,7 @@ func TestWorkflowSuspend(t *testing.T) {
 			}, wf)
 			r.NoError(err)
 			r.Equal(true, wf.Status.Workflow.Suspend)
+			r.Equal(tc.expected.Status, wf.Status)
 		})
 	}
 }
@@ -263,11 +470,11 @@ func TestWorkflowResume(t *testing.T) {
 			r.Equal(false, wf.Status.Workflow.Suspend)
 			for _, step := range wf.Status.Workflow.Steps {
 				if step.Type == "suspend" {
-					r.Equal(step.Phase, workflowv1alpha1.WorkflowStepPhaseSucceeded)
+					r.Equal(step.Phase, workflowv1alpha1.WorkflowStepPhaseRunning)
 				}
 				for _, sub := range step.SubStepsStatus {
 					if sub.Type == "suspend" {
-						r.Equal(sub.Phase, workflowv1alpha1.WorkflowStepPhaseSucceeded)
+						r.Equal(sub.Phase, workflowv1alpha1.WorkflowStepPhaseRunning)
 					}
 				}
 			}
@@ -611,6 +818,169 @@ func TestWorkflowRollback(t *testing.T) {
 			}, wf)
 			r.NoError(err)
 			r.Equal(wf.Spec.Components[0].Name, "revision-component")
+		})
+	}
+}
+
+func TestWorkflowList(t *testing.T) {
+	c := initArgs()
+	buf := new(bytes.Buffer)
+	ioStream := cmdutil.IOStreams{In: os.Stdin, Out: buf, ErrOut: os.Stderr}
+	ctx := context.TODO()
+	testCases := map[string]struct {
+		workflows         []interface{}
+		apps              []*v1beta1.Application
+		workflowRuns      []*workflowv1alpha1.WorkflowRun
+		expectedErr       error
+		namespace         string
+		expectAppListSize int
+	}{
+		"specified all namespaces flag": {
+			workflows: []interface{}{
+				&v1beta1.Application{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "app-workflow",
+						Namespace: "some-ns",
+					},
+					Spec: workflowSpec,
+					Status: common.AppStatus{
+						LatestRevision: &common.Revision{
+							Name: "revision-v1",
+						},
+						Workflow: &common.WorkflowStatus{
+							Terminated: true,
+							Phase:      workflowv1alpha1.WorkflowStateInitializing,
+							StartTime:  metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+							EndTime:    metav1.NewTime(time.Now()),
+						},
+					},
+				},
+				&workflowv1alpha1.WorkflowRun{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "workflow-run",
+						Namespace: "some-ns",
+					},
+					Status: workflowv1alpha1.WorkflowRunStatus{
+						Phase:     workflowv1alpha1.WorkflowStateExecuting,
+						StartTime: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+						EndTime:   metav1.NewTime(time.Now()),
+					},
+				},
+			},
+			expectedErr: nil,
+		},
+		"specified namespace flag": {
+			workflows: []interface{}{
+				&workflowv1alpha1.WorkflowRun{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "workflow-run-1",
+						Namespace: "test",
+					},
+					Status: workflowv1alpha1.WorkflowRunStatus{
+						Phase:     workflowv1alpha1.WorkflowStateExecuting,
+						StartTime: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+						EndTime:   metav1.NewTime(time.Now()),
+					},
+				},
+			},
+			namespace:   "test",
+			expectedErr: nil,
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			buf.Reset()
+			cmd := NewWorkflowListCommand(c, ioStream, &WorkflowArgs{Args: c, Writer: ioStream.Out})
+			initCommand(cmd)
+			// clean up the arguments before start
+			cmd.SetArgs([]string{})
+			client, err := c.GetClient()
+			r.NoError(err)
+			if len(tc.workflows) > 0 {
+				for _, w := range tc.workflows {
+					if workflow, ok := w.(*workflowv1alpha1.WorkflowRun); ok {
+						err := client.Create(ctx, workflow)
+						r.NoError(err)
+					} else if app, ok := w.(*v1beta1.Application); ok {
+						err := client.Create(ctx, app)
+						r.NoError(err)
+					}
+				}
+			}
+			args := []string{}
+			if tc.namespace == "" {
+				args = append(args, "-A")
+			} else {
+				args = append(args, "-n", tc.namespace)
+			}
+
+			cmd.SetArgs(args)
+			err = cmd.Execute()
+
+			lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+
+			headerFields := strings.Fields(lines[0])
+			if tc.namespace == "" {
+				r.Equal(headerFields[0], "NAMESPACE")
+
+			} else {
+				r.Equal(headerFields[0], "NAME")
+			}
+			offset := 0
+			for i, line := range lines[1:] {
+				fields := strings.Fields(line)
+				if workflow, ok := tc.workflows[i].(*workflowv1alpha1.WorkflowRun); ok {
+					if tc.namespace == "" {
+						r.Equal(fields[0], workflow.Namespace)
+						offset = offset + 1
+					} else if tc.namespace == workflow.Namespace {
+						r.Equal(fields[0+offset], workflow.Name)
+						r.Equal(fields[1+offset], "WorkflowRun")
+						r.Equal(fields[2+offset], string(workflow.Status.Phase))
+						r.Equal(fields[3+offset], workflow.Status.StartTime.Format("2006-01-02"))
+						r.Equal(fields[4+offset], workflow.Status.StartTime.Format("15:04:05"))
+						//skipping a few fields due to the format including  timezone information
+						r.Equal(fields[7+offset], workflow.Status.EndTime.Format("2006-01-02"))
+						r.Equal(fields[8+offset], workflow.Status.EndTime.Format("15:04:05"))
+					}
+				} else if app, ok := tc.workflows[i].(*v1beta1.Application); ok {
+					offset = 0
+					if tc.namespace == "" {
+						r.Equal(fields[0+offset], app.Namespace)
+						offset = offset + 1
+					} else if tc.namespace == app.Namespace {
+						r.Equal(fields[0+offset], app.Name)
+						r.Equal(fields[1+offset], "Application")
+						r.Equal(fields[2+offset], string(app.Status.Workflow.Phase))
+						r.Equal(fields[3+offset], app.Status.Workflow.StartTime.Format("2006-01-02"))
+						r.Equal(fields[4+offset], app.Status.Workflow.StartTime.Format("15:04:05"))
+						//skipping a few fields due to the format including  timezone information
+						r.Equal(fields[7+offset], app.Status.Workflow.EndTime.Format("2006-01-02"))
+						r.Equal(fields[8+offset], app.Status.Workflow.EndTime.Format("15:04:05"))
+					}
+				}
+
+			}
+
+			if len(tc.workflows) > 0 {
+				for _, w := range tc.workflows {
+					if workflow, ok := w.(*workflowv1alpha1.WorkflowRun); ok {
+						err := client.Delete(ctx, workflow)
+						r.NoError(err)
+					} else if app, ok := w.(*v1beta1.Application); ok {
+						err := client.Delete(ctx, app)
+						r.NoError(err)
+					}
+				}
+			}
+
+			if tc.expectedErr != nil {
+				r.Equal(tc.expectedErr, err)
+				return
+			}
+			r.NoError(err)
+
 		})
 	}
 }

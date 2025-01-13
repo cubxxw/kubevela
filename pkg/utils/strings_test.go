@@ -17,123 +17,17 @@
 package utils
 
 import (
-	"errors"
-	"net/url"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestCompareSlice(t *testing.T) {
-	caseA := []string{"c", "b", "a"}
-	caseB := []string{"c", "b", "a"}
-	gotab, gotao, gotbo := ThreeWaySliceCompare(caseA, caseB)
-	assert.Equal(t, gotab, []string{"a", "b", "c"})
-	assert.Equal(t, gotao, []string(nil))
-	assert.Equal(t, gotbo, []string(nil))
-
-	caseA = []string{"c", "b"}
-	caseB = []string{"c", "a"}
-	gotab, gotao, gotbo = ThreeWaySliceCompare(caseA, caseB)
-	assert.Equal(t, gotab, []string{"c"})
-	assert.Equal(t, gotao, []string{"b"})
-	assert.Equal(t, gotbo, []string{"a"})
-
-	caseA = []string{"c", "b"}
-	caseB = nil
-	gotab, gotao, gotbo = ThreeWaySliceCompare(caseA, caseB)
-	assert.Equal(t, gotab, []string(nil))
-	assert.Equal(t, gotao, []string{"b", "c"})
-	assert.Equal(t, gotbo, []string(nil))
-
-	caseA = nil
-	caseB = []string{"c", "b"}
-	gotab, gotao, gotbo = ThreeWaySliceCompare(caseA, caseB)
-	assert.Equal(t, gotab, []string(nil))
-	assert.Equal(t, gotao, []string(nil))
-	assert.Equal(t, gotbo, []string{"b", "c"})
+func TestSanitize(t *testing.T) {
+	s := "abc\ndef\rgh"
+	require.Equal(t, "abcdefgh", Sanitize(s))
 }
 
-func TestEqual(t *testing.T) {
-	caseA := []string{"c", "b", "a"}
-	caseB := []string{"c", "b", "a"}
-	assert.Equal(t, EqualSlice(caseA, caseB), true)
-
-	caseA = []string{"c", "a", "b"}
-	caseB = []string{"c", "b", "a"}
-	assert.Equal(t, EqualSlice(caseA, caseB), true)
-
-	caseA = []string{"c", "a", "b"}
-	caseB = []string{"b", "a", "c"}
-	assert.Equal(t, EqualSlice(caseA, caseB), true)
-
-	caseA = []string{"c", "a", "b"}
-	caseB = []string{"b", "a", "c", "d"}
-	assert.Equal(t, EqualSlice(caseA, caseB), false)
-
-	caseA = []string{}
-	caseB = []string{}
-	assert.Equal(t, EqualSlice(caseA, caseB), true)
-
-	caseA = []string{}
-	caseB = []string{"b", "a", "c"}
-	assert.Equal(t, EqualSlice(caseA, caseB), false)
-}
-
-func TestSliceIncludeSlice(t *testing.T) {
-	caseA := []string{"b", "a", "c"}
-	caseB := []string{}
-	assert.Equal(t, SliceIncludeSlice(caseA, caseB), true)
-
-	caseA = []string{"b", "a", "c"}
-	caseB = []string{"b"}
-	assert.Equal(t, SliceIncludeSlice(caseA, caseB), true)
-
-	caseA = []string{"b", "a", "c"}
-	caseB = []string{"b", "c"}
-	assert.Equal(t, SliceIncludeSlice(caseA, caseB), true)
-
-	caseA = []string{"b", "a", "c"}
-	caseB = []string{"b", "c", "d"}
-	assert.Equal(t, SliceIncludeSlice(caseA, caseB), false)
-
-	caseA = []string{"b", "a", "c"}
-	caseB = []string{"b", "c", "a"}
-	assert.Equal(t, SliceIncludeSlice(caseA, caseB), true)
-}
-
-func TestJoinURL(t *testing.T) {
-
-	testcase := []struct {
-		baseURL     string
-		subPath     string
-		expectedUrl string
-		err         error
-	}{
-		{
-			baseURL:     "https://www.kubevela.com",
-			subPath:     "index.yaml",
-			expectedUrl: "https://www.kubevela.com/index.yaml",
-			err:         nil,
-		},
-		{
-			baseURL:     "http://www.kubevela.com",
-			subPath:     "index.yaml",
-			expectedUrl: "http://www.kubevela.com/index.yaml",
-			err:         nil,
-		},
-		{
-			baseURL:     "0x7f:",
-			subPath:     "index.yaml",
-			expectedUrl: "",
-			err:         &url.Error{Op: "parse", URL: "0x7f:", Err: errors.New("first path segment in URL cannot contain colon")},
-		},
-	}
-
-	for _, tc := range testcase {
-		url, err := JoinURL(tc.baseURL, tc.subPath)
-		assert.Equal(t, tc.expectedUrl, url)
-		assert.Equal(t, tc.err, err)
-	}
-
+func TestIgnoreVPrefix(t *testing.T) {
+	require.Equal(t, "1.2.0", IgnoreVPrefix("v1.2.0"))
+	require.Equal(t, "1.2.0", IgnoreVPrefix("1.2.0"))
 }

@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -34,7 +34,7 @@ func TestTopologyView(t *testing.T) {
 	testEnv := &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute * 3,
 		ControlPlaneStopTimeout:  time.Minute,
-		UseExistingCluster:       pointer.BoolPtr(false),
+		UseExistingCluster:       ptr.To(false),
 	}
 	cfg, err := testEnv.Start()
 	assert.NoError(t, err)
@@ -57,6 +57,7 @@ func TestTopologyView(t *testing.T) {
 
 	t.Run("init", func(t *testing.T) {
 		topologyView.Init()
+		assert.NotEmpty(t, topologyView.metricsInstance)
 		assert.Equal(t, topologyView.GetTitle(), "[ Topology ]")
 		assert.Equal(t, topologyView.GetBorderColor(), topologyView.app.config.Theme.Border.Table.Color())
 	})
@@ -67,6 +68,7 @@ func TestTopologyView(t *testing.T) {
 
 	t.Run("start", func(t *testing.T) {
 		topologyView.Start()
+		assert.Equal(t, topologyView.metricsInstance.HasFocus(), false)
 		assert.Equal(t, topologyView.appTopologyInstance.HasFocus(), true)
 		assert.Equal(t, topologyView.resourceTopologyInstance.HasFocus(), false)
 		topologyView.switchTopology(nil)

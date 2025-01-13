@@ -19,6 +19,7 @@ import (
 	"io"
 
 	"github.com/kubevela/pkg/util/compression"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	apitypes "k8s.io/apimachinery/pkg/types"
@@ -29,7 +30,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application"
+	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/application"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -40,13 +41,14 @@ const (
 )
 
 // RevisionCommandGroup the commands for managing application revisions
-func RevisionCommandGroup(c common.Args) *cobra.Command {
+func RevisionCommandGroup(c common.Args, order string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "revision",
-		Short: "Manage Application Revisions",
+		Short: "Manage Application Revisions.",
 		Long:  "Manage KubeVela Application Revisions",
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeApp,
+			types.TagCommandType:  types.TypeApp,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.AddCommand(
@@ -133,16 +135,6 @@ func getRevision(ctx context.Context, c common.Args, format string, out io.Write
 		return err
 	}
 
-	dm, err := c.GetDiscoveryMapper()
-	if err != nil {
-		return err
-	}
-
-	pd, err := c.GetPackageDiscover()
-	if err != nil {
-		return err
-	}
-
 	params := map[string]string{
 		"name":      name,
 		"namespace": namespace,
@@ -150,17 +142,17 @@ func getRevision(ctx context.Context, c common.Args, format string, out io.Write
 	query, err := velaql.ParseVelaQL(MakeVelaQL(revisionView, params, "status"))
 	if err != nil {
 		klog.Errorf("fail to parse ql string %s", err.Error())
-		return fmt.Errorf(fmt.Sprintf("Unable to get application revision %s in namespace %s", name, namespace))
+		return fmt.Errorf("Unable to get application revision %s in namespace %s", name, namespace) //lint:ignore ST1005 backward compatibility
 	}
 
-	queryValue, err := velaql.NewViewHandler(cli, kubeConfig, dm, pd).QueryView(ctx, query)
+	queryValue, err := velaql.NewViewHandler(cli, kubeConfig).QueryView(ctx, query)
 	if err != nil {
 		klog.Errorf("fail to query the view %s", err.Error())
-		return fmt.Errorf(fmt.Sprintf("Unable to get application revision %s in namespace %s", name, namespace))
+		return fmt.Errorf("Unable to get application revision %s in namespace %s", name, namespace) //lint:ignore ST1005 backward compatibility
 	}
 
 	apprev := v1beta1.ApplicationRevision{}
-	err = queryValue.UnmarshalTo(&apprev)
+	err = value.UnmarshalTo(queryValue, &apprev)
 	if err != nil {
 		return err
 	}

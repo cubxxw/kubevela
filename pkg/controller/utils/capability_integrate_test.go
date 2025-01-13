@@ -20,11 +20,11 @@ package utils
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -54,7 +54,7 @@ var _ = Describe("Test Capability", func() {
 		It("Test CapabilityComponentDefinition", func() {
 			By("Apply ComponentDefinition")
 			var validComponentDefinition = `
-apiVersion: core.oam.dev/v1alpha2
+apiVersion: core.oam.dev/v1beta1
 kind: ComponentDefinition
 metadata:
   name: web1
@@ -111,7 +111,7 @@ spec:
 			def := &CapabilityComponentDefinition{Name: componentDefinitionName, ComponentDefinition: *componentDefinition.DeepCopy()}
 
 			By("Test GetOpenAPISchema")
-			schema, err := def.GetOpenAPISchema(namespace)
+			schema, err := def.GetOpenAPISchema(context.Background(), namespace)
 			Expect(err).Should(BeNil())
 			Expect(schema).Should(Not(BeNil()))
 		})
@@ -128,8 +128,8 @@ spec:
 				Kind:               "k1",
 				Name:               definitionName,
 				UID:                "123456",
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         ptr.To(true),
+				BlockOwnerDeletion: ptr.To(true),
 			}}
 			_, err := def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, definitionName, typeTraitDefinition, nil, nil, []byte(""), ownerReference)
 			Expect(err).Should(BeNil())

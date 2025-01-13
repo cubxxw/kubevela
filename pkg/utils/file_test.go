@@ -21,29 +21,29 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIsEmptyDir(t *testing.T) {
 	// Test with an empty dir
 	err := os.Mkdir("testdir", 0750)
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	defer func() {
 		_ = os.RemoveAll("testdir")
 	}()
 	isEmptyDir, err := IsEmptyDir("testdir")
 	assert.Equal(t, isEmptyDir, true)
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	// Test with a file
 	err = os.WriteFile(filepath.Join("testdir", "testfile"), []byte("test"), 0644)
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	isEmptyDir, err = IsEmptyDir(filepath.Join("testdir", "testfile"))
 	assert.Equal(t, isEmptyDir, false)
 	assert.Equal(t, err != nil, true)
 	// Test with a non-empty dir
 	isEmptyDir, err = IsEmptyDir("testdir")
 	assert.Equal(t, isEmptyDir, false)
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 }
 
 func TestGetFilenameFromLocalOrRemote(t *testing.T) {
@@ -80,5 +80,50 @@ func TestGetFilenameFromLocalOrRemote(t *testing.T) {
 	for _, c := range cases {
 		n, _ := GetFilenameFromLocalOrRemote(c.path)
 		assert.Equal(t, c.filename, n)
+	}
+}
+
+func TestIsJSONYAMLorCUEFile(t *testing.T) {
+	type args struct {
+		path string
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{
+		{
+			name: "test is json file",
+			args: args{
+				path: "test.json",
+			},
+			want: true,
+		},
+		{
+			name: "test is yaml file",
+			args: args{
+				path: "test.yaml",
+			},
+			want: true,
+		},
+		{
+			name: "test is cue file",
+			args: args{
+				path: "test.cue",
+			},
+			want: true,
+		},
+		{
+			name: "test is not json/yaml/cue file",
+			args: args{
+				path: "test.txt",
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsJSONYAMLorCUEFile(tt.args.path), "IsJSONYAMLorCUEFile(%v)", tt.args.path)
+		})
 	}
 }

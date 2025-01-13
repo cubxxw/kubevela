@@ -1,6 +1,6 @@
 ARG BASE_IMAGE
 # Build the manager binary
-FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.19-alpine@sha256:a9b24b67dc83b3383d22a14941c2b2b2ca6a103d805cac6820fd1355943beaf1 as builder
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.22-alpine@sha256:d1a601b64de09e2fa38c95e55838961811d5ca11062a8f4230a5c434b3ae2a34 as builder
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -13,7 +13,6 @@ RUN go mod download
 # Copy the go source
 COPY cmd/core/main.go main.go
 COPY cmd/core/main_e2e_test.go main_e2e_test.go
-COPY cmd/apiserver/main.go cmd/apiserver/main.go
 COPY cmd/ cmd/
 COPY apis/ apis/
 COPY pkg/ pkg/
@@ -29,10 +28,6 @@ RUN  apk add gcc musl-dev libc-dev ;\
     GO111MODULE=on CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go test -c -o manager-${TARGETARCH}  -cover -covermode=atomic -coverpkg ./... .
 
-RUN GO111MODULE=on CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -a -ldflags "-s -w -X github.com/oam-dev/kubevela/version.VelaVersion=${VERSION:-undefined} -X github.com/oam-dev/kubevela/version.GitRevision=${GITVERSION:-undefined}" \
-    -o apiserver-${TARGETARCH} cmd/apiserver/main.go
-
 # Use alpine as base image due to the discussion in issue #1448
 # You can replace distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
@@ -46,7 +41,6 @@ WORKDIR /
 
 ARG TARGETARCH
 COPY --from=builder /workspace/manager-${TARGETARCH} /usr/local/bin/manager
-COPY --from=builder /workspace/apiserver-${TARGETARCH} /usr/local/bin/apiserver
 
 COPY entrypoint.sh /usr/local/bin/
 

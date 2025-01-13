@@ -24,59 +24,37 @@ import (
 	"strings"
 	"time"
 
+	"cuelang.org/go/cue"
+	"k8s.io/client-go/rest"
+
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	pkgtypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	pkgmulticluster "github.com/kubevela/pkg/multicluster"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 	"github.com/kubevela/workflow/pkg/cue/model/sets"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/kubevela/workflow/pkg/utils"
 
 	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	pkgappfile "github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/policy"
 	"github.com/oam-dev/kubevela/pkg/resourcetracker"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	types2 "github.com/oam-dev/kubevela/pkg/utils/types"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
-	types2 "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
 	"github.com/oam-dev/kubevela/references/appfile"
+	references "github.com/oam-dev/kubevela/references/common"
 )
-
-// HealthStatus represents health status strings.
-type HealthStatus = v1alpha2.HealthStatus
-
-const (
-	// HealthStatusNotDiagnosed means there's no health scope referred or unknown health status returned
-	HealthStatusNotDiagnosed HealthStatus = "NOT DIAGNOSED"
-)
-
-const (
-	// HealthStatusHealthy represents healthy status.
-	HealthStatusHealthy = v1alpha2.StatusHealthy
-	// HealthStatusUnhealthy represents unhealthy status.
-	HealthStatusUnhealthy = v1alpha2.StatusUnhealthy
-	// HealthStatusUnknown represents unknown status.
-	HealthStatusUnknown = v1alpha2.StatusUnknown
-)
-
-// WorkloadHealthCondition holds health status of any resource
-type WorkloadHealthCondition = v1alpha2.WorkloadHealthCondition
-
-// ScopeHealthCondition holds health condition of a scope
-type ScopeHealthCondition = v1alpha2.ScopeHealthCondition
 
 // AppDeployStatus represents the status of application during "vela init" and "vela up --wait"
 type AppDeployStatus int
@@ -98,7 +76,7 @@ func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStream
 	var outputFormat string
 	var detail bool
 	cmd := &cobra.Command{
-		Use:   "status APP_NAME",
+		Use:   "status",
 		Short: "Show status of an application.",
 		Long:  "Show status of vela application.",
 		Example: `  # Get basic app info
@@ -118,7 +96,10 @@ func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStream
   vela status first-vela-app -o yaml
 
   # Get raw Application status using jsonpath
-  vela status first-vela-app -o jsonpath='{.status}'`,
+  vela status first-vela-app -o jsonpath='{.status}'
+  
+  # Get Application metrics status
+  vela status first-vela-app --metrics`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// check args
 			argsLength := len(args)
@@ -163,6 +144,16 @@ func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStream
 				}
 				return printAppEndpoints(ctx, appName, namespace, f, c, false)
 			}
+
+			restConf, err := c.GetConfig()
+			if err != nil {
+				return err
+			}
+
+			if showMetrics, err := cmd.Flags().GetBool("metrics"); showMetrics && err == nil {
+				return printMetrics(newClient, restConf, appName, namespace)
+			}
+
 			if outputFormat != "" {
 				return printRawApplication(context.Background(), c, outputFormat, cmd.OutOrStdout(), namespace, appName)
 			}
@@ -170,7 +161,7 @@ func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStream
 		},
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
-			types.TagCommandType:  types.TypeApp,
+			types.TagCommandType:  types.TypeStart,
 		},
 	}
 	cmd.Flags().StringP("svc", "s", "", "service name")
@@ -182,6 +173,7 @@ func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStream
 	cmd.Flags().BoolVarP(&detail, "detail", "d", false, "display more details in the application like input/output data in context. Note that if you want to show the realtime details of application resources, please use it with --tree")
 	cmd.Flags().StringP("detail-format", "", "inline", "the format for displaying details, must be used with --detail. Can be one of inline, wide, list, table, raw.")
 	cmd.Flags().StringVarP(&outputFormat, "output", "o", "", "raw Application output format. One of: (json, yaml, jsonpath)")
+	cmd.Flags().BoolP("metrics", "m", false, "show resource quota and consumption metrics of the application")
 	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
@@ -266,7 +258,7 @@ func printWorkflowStatus(c client.Client, ioStreams cmdutil.IOStreams, appName s
 		return err
 	}
 	outputs := make(map[string]workflowv1alpha1.StepOutputs)
-	var v *value.Value
+	var v cue.Value
 	if detail {
 		for _, c := range remoteApp.Spec.Components {
 			if c.Outputs != nil {
@@ -287,7 +279,7 @@ func printWorkflowStatus(c client.Client, ioStreams cmdutil.IOStreams, appName s
 		}
 		if remoteApp.Status.Workflow != nil && remoteApp.Status.Workflow.ContextBackend != nil {
 			ctxBackend := remoteApp.Status.Workflow.ContextBackend
-			v, err = utils.GetDataFromContext(context.Background(), c, ctxBackend.Name, remoteApp.Name, remoteApp.Namespace)
+			v, err = utils.GetDataFromContext(context.Background(), ctxBackend.Name, remoteApp.Name, remoteApp.Namespace)
 			if err != nil {
 				return err
 			}
@@ -312,7 +304,7 @@ func printWorkflowStatus(c client.Client, ioStreams cmdutil.IOStreams, appName s
 	return nil
 }
 
-func printWorkflowStepStatus(indent string, step workflowv1alpha1.StepStatus, ioStreams cmdutil.IOStreams, detail bool, outputs map[string]workflowv1alpha1.StepOutputs, v *value.Value) {
+func printWorkflowStepStatus(indent string, step workflowv1alpha1.StepStatus, ioStreams cmdutil.IOStreams, detail bool, outputs map[string]workflowv1alpha1.StepOutputs, v cue.Value) {
 	ioStreams.Infof("%s- id: %s\n", indent[0:len(indent)-2], step.ID)
 	ioStreams.Infof("%sname: %s\n", indent, step.Name)
 	ioStreams.Infof("%stype: %s\n", indent, step.Type)
@@ -324,11 +316,11 @@ func printWorkflowStepStatus(indent string, step workflowv1alpha1.StepStatus, io
 		if len(outputs[step.Name]) > 0 {
 			ioStreams.Infof("%soutputs:\n", indent)
 			for _, output := range outputs[step.Name] {
-				outputValue, err := v.LookupValue(output.Name)
-				if err != nil {
+				outputValue := v.LookupPath(cue.ParsePath(output.Name))
+				if !outputValue.Exists() {
 					continue
 				}
-				s, err := sets.ToString(outputValue.CueValue())
+				s, err := sets.ToString(outputValue)
 				if err != nil {
 					continue
 				}
@@ -478,14 +470,6 @@ func printApplicationTree(c common.Args, cmd *cobra.Command, appName string, app
 	if err != nil {
 		return err
 	}
-	pd, err := c.GetPackageDiscover()
-	if err != nil {
-		return err
-	}
-	dm, err := discoverymapper.New(config)
-	if err != nil {
-		return err
-	}
 
 	app, err := loadRemoteApplication(cli, appNs, appName)
 	if err != nil {
@@ -503,14 +487,14 @@ func printApplicationTree(c common.Args, cmd *cobra.Command, appName string, app
 	}
 
 	var placements []v1alpha1.PlacementDecision
-	af, err := pkgappfile.NewApplicationParser(cli, dm, pd).GenerateAppFile(context.Background(), app)
+	af, err := pkgappfile.NewApplicationParser(cli).GenerateAppFile(context.Background(), app)
 	if err == nil {
 		placements, _ = policy.GetPlacementsFromTopologyPolicies(context.Background(), cli, app.GetNamespace(), af.Policies, true)
 	}
 	format, _ := cmd.Flags().GetString("detail-format")
 	var maxWidth *int
 	if w, _, err := term.GetSize(0); err == nil && w > 0 {
-		maxWidth = pointer.Int(w)
+		maxWidth = ptr.To(w)
 	}
 	options := resourcetracker.ResourceTreePrintOptions{MaxWidth: maxWidth, Format: format, ClusterNameMapper: clusterNameMapper}
 	printDetails, _ := cmd.Flags().GetBool("detail")
@@ -554,4 +538,38 @@ func printRawApplication(ctx context.Context, c common.Args, format string, out 
 
 	_, err = out.Write([]byte(str))
 	return err
+}
+
+// printMetrics prints the resource num and resource metrics of an application
+func printMetrics(c client.Client, conf *rest.Config, appName, appNamespace string) error {
+	app := new(v1beta1.Application)
+	err := c.Get(context.Background(), client.ObjectKey{
+		Name:      appName,
+		Namespace: appNamespace,
+	}, app)
+	if err != nil {
+		return err
+	}
+	metrics, err := references.GetApplicationMetrics(c, conf, app)
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	fmt.Printf("Kubernetes Resources created:\n")
+	fmt.Printf("    * Number of Pods:             %d\n", metrics.ResourceNum.Pod)
+	fmt.Printf("    * Number of Containers:       %d\n", metrics.ResourceNum.Container)
+	fmt.Printf("    * Number of Managed Resource: %d\n", metrics.ResourceNum.Subresource)
+	fmt.Printf("    * Number of Nodes:            %d\n", metrics.ResourceNum.Node)
+	fmt.Printf("    * Number of Clusters:         %d\n", metrics.ResourceNum.Cluster)
+	fmt.Println()
+	fmt.Printf("Underlying Physical Resoures consumed:\n")
+	fmt.Printf("    * Total   CPU(cores):         %d m\n", metrics.Metrics.CPUUsage)
+	fmt.Printf("    * Limit   CPU(cores):         %d m\n", metrics.Metrics.CPULimit)
+	fmt.Printf("    * Request CPU(cores):         %d m\n", metrics.Metrics.CPURequest)
+	fmt.Printf("    * Total   Memory(bytes):      %d Mi\n", metrics.Metrics.MemoryUsage/(1024*1024))
+	fmt.Printf("    * Limit   Memory(bytes):      %d Mi\n", metrics.Metrics.MemoryLimit/(1024*1024))
+	fmt.Printf("    * Request Memory(bytes):      %d Mi\n", metrics.Metrics.MemoryRequest/(1024*1024))
+	fmt.Printf("    * Total   Storage(bytes):     %d Gi\n", metrics.Metrics.Storage/(1024*1024*1024))
+	fmt.Println()
+	return nil
 }

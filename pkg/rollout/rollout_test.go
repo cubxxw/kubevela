@@ -19,15 +19,17 @@ package rollout
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	kruisev1alpha1 "github.com/openkruise/rollouts/api/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -37,11 +39,13 @@ var _ = Describe("Kruise rollout test", func() {
 		Expect(k8sClient.Create(ctx, rollout.DeepCopy())).Should(SatisfyAny(BeNil(), util.AlreadyExistMatcher{}))
 		Expect(k8sClient.Create(ctx, rt.DeepCopy())).Should(SatisfyAny(BeNil(), util.AlreadyExistMatcher{}))
 		Expect(k8sClient.Create(ctx, app.DeepCopy())).Should(SatisfyAny(BeNil(), util.AlreadyExistMatcher{}))
+		Expect(k8sClient.Create(ctx, rollingReleaseRollout.DeepCopy())).Should(SatisfyAny(BeNil(), util.AlreadyExistMatcher{}))
 	})
 
 	It("test get associated rollout func", func() {
 		rollouts, err := getAssociatedRollouts(ctx, k8sClient, &app, false)
 		Expect(err).Should(BeNil())
+		// test will only fetch one rollout in result
 		Expect(len(rollouts)).Should(BeEquivalentTo(1))
 	})
 
@@ -120,6 +124,19 @@ var rt = v1beta1.ResourceTracker{
 					Component: "my-rollout",
 				},
 			},
+			{
+				ClusterObjectReference: common.ClusterObjectReference{
+					ObjectReference: v1.ObjectReference{
+						APIVersion: "rollouts.kruise.io/v1alpha1",
+						Kind:       "Rollout",
+						Name:       "rolling-release-rollout",
+						Namespace:  "default",
+					},
+				},
+				OAMObjectReference: common.OAMObjectReference{
+					Component: "my-rollout",
+				},
+			},
 		},
 	},
 }
@@ -145,7 +162,40 @@ var rollout = kruisev1alpha1.Rollout{
 			Canary: &kruisev1alpha1.CanaryStrategy{
 				Steps: []kruisev1alpha1.CanaryStep{
 					{
-						Weight: 30,
+						Weight: ptr.To(int32(30)),
+					},
+				},
+			},
+			Paused: false,
+		},
+	},
+}
+
+var rollingReleaseRollout = kruisev1alpha1.Rollout{
+	TypeMeta: metav1.TypeMeta{
+		APIVersion: "rollouts.kruise.io/v1alpha1",
+		Kind:       "Rollout",
+	},
+	ObjectMeta: metav1.ObjectMeta{
+		Name:      "rolling-release-rollout",
+		Namespace: "default",
+		Annotations: map[string]string{
+			oam.AnnotationSkipResume: "true",
+		},
+	},
+	Spec: kruisev1alpha1.RolloutSpec{
+		ObjectRef: kruisev1alpha1.ObjectRef{
+			WorkloadRef: &kruisev1alpha1.WorkloadRef{
+				APIVersion: "appsv1",
+				Kind:       "Deployment",
+				Name:       "canary-demo",
+			},
+		},
+		Strategy: kruisev1alpha1.RolloutStrategy{
+			Canary: &kruisev1alpha1.CanaryStrategy{
+				Steps: []kruisev1alpha1.CanaryStep{
+					{
+						Weight: ptr.To(int32(30)),
 					},
 				},
 			},

@@ -23,16 +23,17 @@ import (
 
 	"github.com/kubevela/workflow/pkg/cue/process"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/types"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
 // ValidateCUESchematicAppfile validates CUE schematic workloads in an Appfile
 func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
-	for _, wl := range a.Workloads {
+	for _, wl := range a.ParsedComponents {
 		// because helm & kube schematic has no CUE template
 		// it only validates CUE schematic workload
-		if wl.CapabilityCategory != types.CUECategory {
+		if wl.CapabilityCategory != types.CUECategory || wl.Type == v1alpha1.RefObjectsComponentType {
 			continue
 		}
 		ctxData := GenerateContextDataFromAppFile(a, wl.Name)
@@ -52,7 +53,7 @@ func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
 	return nil
 }
 
-func newValidationProcessContext(wl *Workload, ctxData velaprocess.ContextData) (process.Context, error) {
+func newValidationProcessContext(c *Component, ctxData velaprocess.ContextData) (process.Context, error) {
 	baseHooks := []process.BaseHook{
 		// add more hook funcs here to validate CUE base
 	}
@@ -64,7 +65,7 @@ func newValidationProcessContext(wl *Workload, ctxData velaprocess.ContextData) 
 	ctxData.BaseHooks = baseHooks
 	ctxData.AuxiliaryHooks = auxiliaryHooks
 	pCtx := velaprocess.NewContext(ctxData)
-	if err := wl.EvalContext(pCtx); err != nil {
+	if err := c.EvalContext(pCtx); err != nil {
 		return nil, errors.Wrapf(err, "evaluate base template app=%s in namespace=%s", ctxData.AppName, ctxData.Namespace)
 	}
 	return pCtx, nil

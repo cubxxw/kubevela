@@ -20,6 +20,7 @@ package definition
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -31,6 +32,7 @@ import (
 	"cuelang.org/go/encoding/gocode/gocodec"
 	"cuelang.org/go/tools/fix"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -38,15 +40,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	"github.com/kubevela/pkg/cue/cuex"
 	"github.com/kubevela/workflow/pkg/cue/model/sets"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
-	"github.com/kubevela/workflow/pkg/cue/packages"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/filters"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers"
 )
 
 const (
@@ -56,12 +59,15 @@ const (
 	AliasKey = "definition.oam.dev/alias"
 	// UserPrefix defines the prefix of user customized label or annotation
 	UserPrefix = "custom.definition.oam.dev/"
-	// DefinitionAlias is alias of definition
-	DefinitionAlias = "alias.config.oam.dev"
-	// DefinitionType marks definition's usage type, like image-registry
-	DefinitionType = "type.config.oam.dev"
-	// ConfigCatalog marks definition is a catalog
-	ConfigCatalog = "catalog.config.oam.dev"
+)
+
+// the names for different type of definition
+const (
+	componentDefType    = "component"
+	traitDefType        = "trait"
+	policyDefType       = "policy"
+	workflowStepDefType = "workflow-step"
+	workloadDefType     = "workload"
 )
 
 var (
@@ -69,23 +75,22 @@ var (
 	DefinitionTemplateKeys = []string{"spec", "schematic", "cue", "template"}
 	// DefinitionTypeToKind maps the definition types to corresponding kinds
 	DefinitionTypeToKind = map[string]string{
-		"component":     v1beta1.ComponentDefinitionKind,
-		"trait":         v1beta1.TraitDefinitionKind,
-		"policy":        v1beta1.PolicyDefinitionKind,
-		"workload":      v1beta1.WorkloadDefinitionKind,
-		"scope":         v1beta1.ScopeDefinitionKind,
-		"workflow-step": v1beta1.WorkflowStepDefinitionKind,
+		componentDefType:    v1beta1.ComponentDefinitionKind,
+		traitDefType:        v1beta1.TraitDefinitionKind,
+		policyDefType:       v1beta1.PolicyDefinitionKind,
+		workloadDefType:     v1beta1.WorkloadDefinitionKind,
+		workflowStepDefType: v1beta1.WorkflowStepDefinitionKind,
 	}
 	// StringToDefinitionType converts user input to DefinitionType used in DefinitionRevisions
 	StringToDefinitionType = map[string]common.DefinitionType{
 		// component
-		"component": common.ComponentType,
+		componentDefType: common.ComponentType,
 		// trait
-		"trait": common.TraitType,
+		traitDefType: common.TraitType,
 		// policy
-		"policy": common.PolicyType,
+		policyDefType: common.PolicyType,
 		// workflow-step
-		"workflow-step": common.WorkflowStepType,
+		workflowStepDefType: common.WorkflowStepType,
 	}
 	// DefinitionKindToNameLabel records DefinitionRevision types and labels to search its name
 	DefinitionKindToNameLabel = map[common.DefinitionType]string{
@@ -93,6 +98,14 @@ var (
 		common.TraitType:        oam.LabelTraitDefinitionName,
 		common.PolicyType:       oam.LabelPolicyDefinitionName,
 		common.WorkflowStepType: oam.LabelWorkflowStepDefinitionName,
+	}
+	// DefinitionKindToType maps the definition kinds to a shorter type
+	DefinitionKindToType = map[string]string{
+		v1beta1.ComponentDefinitionKind:    componentDefType,
+		v1beta1.TraitDefinitionKind:        traitDefType,
+		v1beta1.PolicyDefinitionKind:       policyDefType,
+		v1beta1.WorkloadDefinitionKind:     workloadDefType,
+		v1beta1.WorkflowStepDefinitionKind: workflowStepDefType,
 	}
 )
 
@@ -322,20 +335,42 @@ func (def *Definition) FromCUE(val *cue.Value, templateString string) error {
 	if err := unstructured.SetNestedField(spec, templateString, DefinitionTemplateKeys[1:]...); err != nil {
 		return err
 	}
+	if err = validateSpec(spec, def.GetType()); err != nil {
+		return fmt.Errorf("invalid definition spec: %w", err)
+	}
 	def.Object["spec"] = spec
 	return nil
 }
 
-func encodeDeclsToString(decls []ast.Decl) (string, error) {
-	s := ""
-	for _, decl := range decls {
-		bs, err := format.Node(decl, format.Simplify())
-		if err != nil {
-			return "", errors.Wrapf(err, "failed to encode decl to string: %v", decl)
-		}
-		s += string(bs) + "\n"
+func validateSpec(spec map[string]interface{}, t string) error {
+	bs, err := json.Marshal(spec)
+	if err != nil {
+		return err
 	}
-	return s, nil
+	var tpl interface{}
+	switch t {
+	case componentDefType:
+		tpl = &v1beta1.ComponentDefinitionSpec{}
+	case traitDefType:
+		tpl = &v1beta1.TraitDefinitionSpec{}
+	case policyDefType:
+		tpl = &v1beta1.PolicyDefinitionSpec{}
+	case workflowStepDefType:
+		tpl = &v1beta1.WorkflowStepDefinitionSpec{}
+	default:
+	}
+	if tpl != nil {
+		return utils.StrictUnmarshal(bs, tpl)
+	}
+	return nil
+}
+
+func encodeDeclsToString(decls []ast.Decl) (string, error) {
+	bs, err := format.Node(&ast.File{Decls: decls}, format.Simplify())
+	if err != nil {
+		return "", fmt.Errorf("failed to encode cue: %w", err)
+	}
+	return strings.TrimSpace(string(bs)) + "\n", nil
 }
 
 // FromYAML converts yaml into Definition
@@ -344,8 +379,8 @@ func (def *Definition) FromYAML(data []byte) error {
 }
 
 // FromCUEString converts cue string into Definition
-func (def *Definition) FromCUEString(cueString string, config *rest.Config) error {
-	cuectx := cuecontext.New()
+func (def *Definition) FromCUEString(cueString string, _ *rest.Config) error {
+	// cuectx := cuecontext.New()
 	f, err := parser.ParseFile("-", cueString, parser.ParseComments)
 	if err != nil {
 		return err
@@ -395,25 +430,16 @@ func (def *Definition) FromCUEString(cueString string, config *rest.Config) erro
 		return errors.Wrapf(err, "failed to encode template decls to string")
 	}
 
-	inst := cuectx.CompileString(metadataString)
-	if inst.Err() != nil {
-		return inst.Err()
+	inst, err := providers.DefaultCompiler.Get().CompileStringWithOptions(context.Background(), metadataString, cuex.DisableResolveProviderFunctions{})
+	if err != nil {
+		return err
 	}
 	templateString, err = formatCUEString(importString + templateString)
 	if err != nil {
 		return err
 	}
-	// validate template
-	if config != nil {
-		pd, err := packages.NewPackageDiscover(config)
-		if err != nil {
-			return err
-		}
-		if _, err = value.NewValue(templateString+"\n"+velacue.BaseTemplate, pd, ""); err != nil {
-			return err
-		}
-	} else if val := cuectx.CompileString(templateString + "\n" + velacue.BaseTemplate); val.Err() != nil {
-		return val.Err()
+	if _, err := providers.DefaultCompiler.Get().CompileStringWithOptions(context.Background(), templateString+"\n"+velacue.BaseTemplate, cuex.DisableResolveProviderFunctions{}); err != nil {
+		return err
 	}
 	return def.FromCUE(&inst, templateString)
 }
@@ -455,6 +481,9 @@ func SearchDefinition(c client.Client, definitionType, namespace string, additio
 			Kind:    kind + "List",
 		})
 		if err := c.List(ctx, &objs, listOptions...); err != nil {
+			if meta.IsNoMatchError(err) {
+				continue
+			}
 			return nil, errors.Wrapf(err, "failed to get %s", kind)
 		}
 
@@ -586,7 +615,7 @@ func GetDefinitionDefaultSpec(kind string) map[string]interface{} {
 			"appliesToWorkloads": []interface{}{},
 			"conflictsWith":      []interface{}{},
 			"workloadRefPath":    "",
-			"definitionRef":      "",
+			"definitionRef":      map[string]interface{}{},
 			"podDisruptive":      false,
 			"schematic": map[string]interface{}{
 				"cue": map[string]interface{}{

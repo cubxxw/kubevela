@@ -18,20 +18,20 @@ permissions:
 
 env:
   # Common versions
-  GO_VERSION: '1.19'
+  GO_VERSION: '1.22'
 
 jobs:
 
   detect-noop:
     permissions:
       actions: write
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     outputs:
       noop: ${{ steps.noop.outputs.should_skip }}
     steps:
       - name: Detect No-op Changes
         id: noop
-        uses: fkirc/skip-duplicate-actions@12aca0a884f6137d619d6a8a09fcc3406ced5281
+        uses: fkirc/skip-duplicate-actions@f75f66ce1886f00957d99748a42c724f4330bdcf
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths_ignore: '["**.md", "**.mdx", "**.png", "**.jpg"]'
@@ -39,23 +39,29 @@ jobs:
         continue-on-error: true
 
   e2e-tests:
-    runs-on: aliyun
+    runs-on: ubuntu-22.04
     needs: [ detect-noop ]
     if: needs.detect-noop.outputs.noop != 'true'
     strategy:
       matrix:
-        k8s-version: ["v1.20","v1.24"]
+        k8s-version: ["v1.29"]
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.k8s-version }}
       cancel-in-progress: true
 
-
     steps:
       - name: Check out code into the Go module directory
-        uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+        uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install make gcc jq ca-certificates curl gnupg -y
+          sudo snap install kubectl --classic
+          sudo snap install helm --classic
 
       - name: Setup Go
-        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -63,28 +69,20 @@ jobs:
         run: |
           go get -v -t -d ./...
 
-      - name: Tear down K3d if exist
+      - name: Setup KinD
         run: |
-          k3d cluster delete || true
-          k3d cluster delete worker || true
+          go install sigs.k8s.io/kind@v0.24.0
+          kind delete cluster || true
+          kind create cluster --image=kindest/node:v1.29.8
 
-      - name: Calculate K3d args
+      - name: Get Ginkgo
         run: |
-          EGRESS_ARG=""
-          if [[ "${{ matrix.k8s-version }}" == v1.24 ]]; then
-            EGRESS_ARG="--k3s-arg --egress-selector-mode=disabled@server:0"
-          fi
-          echo "EGRESS_ARG=${EGRESS_ARG}" >> $GITHUB_ENV 
+          go install github.com/onsi/ginkgo/v2/ginkgo@v2.14.0
 
-      - name: Setup K3d
-        uses: nolar/setup-k3d-k3s@293b8e5822a20bc0d5bcdd4826f1a665e72aba96
-        with:
-          version: ${{ matrix.k8s-version }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          k3d-args: ${{ env.EGRESS_ARG }}
-
-      - name: Load image to k3d cluster
-        run: make image-load
+      - name: Load image
+        run: |
+          mkdir -p $HOME/tmp/
+          TMPDIR=$HOME/tmp/ make image-load
 
       - name: Run Make
         run: make
@@ -108,7 +106,7 @@ jobs:
         run: make end-e2e
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@d9f34f8cd5cb3b3eb79b3e4b5dae3a16df499a70
+        uses: codecov/codecov-action@eaaf4bedf32dbdc6b720b63067d99c4d77d6047d
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: /tmp/e2e-profile.out
@@ -120,4 +118,6 @@ jobs:
 
       - name: Cleanup image
         if: ${{ always() }}
-        run: make image-cleanup
+        run: |
+          make image-cleanup
+          docker image prune -f --filter "until=24h"

@@ -38,6 +38,8 @@ const (
 	velaSystemRequirement = `system.vela`
 	// kubernetesSystemRequirement is the kubernetes requirement annotation key
 	kubernetesSystemRequirement = `system.kubernetes`
+	// addonSystemRequirement is the annotation key to identity an addon from helm chart structure
+	addonSystemRequirement = `addon.name`
 )
 
 // VersionedRegistry is the interface of support version registry
@@ -57,6 +59,18 @@ func BuildVersionedRegistry(name, repoURL string, opts *common.HTTPOption) Versi
 		h:    helm.NewHelperWithCache(),
 		Opts: opts,
 	}
+}
+
+// ToVersionedRegistry converts registry to versioned registry
+func ToVersionedRegistry(registry Registry) (VersionedRegistry, error) {
+	if !IsVersionRegistry(registry) {
+		return nil, errors.Errorf("registry '%s' is not a versioned registry", registry.Name)
+	}
+	return BuildVersionedRegistry(registry.Name, registry.Helm.URL, &common.HTTPOption{
+		Username:        registry.Helm.Username,
+		Password:        registry.Helm.Password,
+		InsecureSkipTLS: registry.Helm.InsecureSkipTLS,
+	}), nil
 }
 
 type versionedRegistry struct {
@@ -147,9 +161,8 @@ func (i versionedRegistry) loadAddon(ctx context.Context, name, version string) 
 	sort.Sort(sort.Reverse(versions))
 	addonVersion, availableVersions := chooseVersion(version, versions)
 	if addonVersion == nil {
-		return nil, errors.Errorf("specified version %s not exist", utils.Sanitize(version))
+		return nil, errors.Errorf("specified version %s for addon %s not exist", utils.Sanitize(version), name)
 	}
-	klog.V(5).Infof("Addon '%s' with version '%s' found from registry '%s'", addonVersion.Name, addonVersion.Version, i.name)
 	for _, chartURL := range addonVersion.URLs {
 		if !utils.IsValidURL(chartURL) {
 			chartURL, err = utils.JoinURL(i.url, chartURL)
@@ -174,7 +187,9 @@ func (i versionedRegistry) loadAddon(ctx context.Context, name, version string) 
 		addonPkg.AvailableVersions = availableVersions
 		addonPkg.RegistryName = i.name
 		addonPkg.Meta.SystemRequirements = LoadSystemRequirements(addonVersion.Annotations)
-		klog.V(5).Infof("Addon '%s' with version '%s' loaded successfully from registry '%s'", addonVersion.Name, addonVersion.Version, i.name)
+		if addonPkg.Name != "" {
+			klog.V(5).Infof("Addon '%s' with version '%s' loaded successfully from registry '%s'", addonVersion.Name, addonVersion.Version, i.name)
+		}
 		return addonPkg, nil
 	}
 	return nil, ErrFetch
@@ -216,6 +231,7 @@ func loadAddonPackage(addonName string, files []*loader.BufferedFile) (*WholeAdd
 }
 
 // chooseVersion will return the target version and all available versions
+// This function is not sensitive to v-prefix, which means if specifiedVersion=0.3.0, v0.3.0 can be chosen.
 func chooseVersion(specifiedVersion string, versions []*repo.ChartVersion) (*repo.ChartVersion, []string) {
 	var addonVersion *repo.ChartVersion
 	var availableVersions []string
@@ -226,7 +242,7 @@ func chooseVersion(specifiedVersion string, versions []*repo.ChartVersion) (*rep
 			continue
 		}
 		if len(specifiedVersion) != 0 {
-			if v.Version == specifiedVersion {
+			if utils.IgnoreVPrefix(v.Version) == utils.IgnoreVPrefix(specifiedVersion) {
 				addonVersion = versions[i]
 			}
 		} else {

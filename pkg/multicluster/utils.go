@@ -24,7 +24,6 @@ import (
 	"time"
 
 	pkgmulticluster "github.com/kubevela/pkg/multicluster"
-	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
 	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 	errors2 "github.com/pkg/errors"
@@ -73,9 +72,7 @@ func ResourcesWithClusterName(clusterName string, objs ...*unstructured.Unstruct
 	var _objs []*unstructured.Unstructured
 	for _, obj := range objs {
 		if obj != nil {
-			if oam.GetCluster(obj) == "" {
-				oam.SetCluster(obj, clusterName)
-			}
+			oam.SetClusterIfEmpty(obj, clusterName)
 			_objs = append(_objs, obj)
 		}
 	}
@@ -137,7 +134,6 @@ func Initialize(restConfig *rest.Config, autoUpgrade bool) (client.Client, error
 		return nil, ErrDetectClusterGateway
 	}
 	ClusterGatewaySecretNamespace = svc.Namespace
-	prismclusterv1alpha1.StorageNamespace = ClusterGatewaySecretNamespace
 	if autoUpgrade {
 		if err = UpgradeExistingClusterSecret(context.Background(), c); err != nil {
 			// this error do not affect the running of current version

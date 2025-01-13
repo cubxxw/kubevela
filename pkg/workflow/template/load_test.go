@@ -23,12 +23,11 @@ import (
 	"testing"
 
 	"github.com/crossplane/crossplane-runtime/pkg/test"
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
-	"github.com/oam-dev/kubevela/pkg/oam/mock"
 )
 
 func TestLoad(t *testing.T) {
@@ -50,17 +49,16 @@ func TestLoad(t *testing.T) {
 			return nil
 		},
 	}
-	tdm := mock.NewMockDiscoveryMapper()
-	loader := NewWorkflowStepTemplateLoader(cli, tdm)
+	loader := NewWorkflowStepTemplateLoader(cli)
 
 	tmpl, err := loader.LoadTemplate(context.Background(), "builtin-apply-component")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	expected, err := os.ReadFile("./static/builtin-apply-component.cue")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, tmpl, string(expected))
 
 	tmpl, err = loader.LoadTemplate(context.Background(), "apply-oam-component")
-	assert.NilError(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, tmpl, `import (
 	"vela/op"
 )
