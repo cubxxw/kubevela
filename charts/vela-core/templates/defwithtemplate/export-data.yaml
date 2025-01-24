@@ -4,7 +4,10 @@ apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
   annotations:
+    custom.definition.oam.dev/category: Application Delivery
     definition.oam.dev/description: Export data to clusters specified by topology.
+  labels:
+    custom.definition.oam.dev/scope: Application
   name: export-data
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:
@@ -13,6 +16,7 @@ spec:
       template: |
         import (
         	"vela/op"
+        	"vela/kube"
         )
 
         object: {
@@ -34,21 +38,26 @@ spec:
         	if parameter.kind == "Secret" {
         		stringData: parameter.data
         	}
-        } @step(1)
+        }
+
         getPlacements: op.#GetPlacementsFromTopologyPolicies & {
         	policies: *[] | [...string]
         	if parameter.topology != _|_ {
         		policies: [parameter.topology]
         	}
-        }      @step(2)
-        apply: op.#Steps & {
+        }
+
+        apply: {
         	for p in getPlacements.placements {
-        		(p.cluster): op.#Apply & {
-        			value:   object
-        			cluster: p.cluster
+        		(p.cluster): kube.#Apply & {
+        			$params: {
+        				value:   object
+        				cluster: p.cluster
+        			}
         		}
         	}
-        } @step(3)
+        }
+
         parameter: {
         	// +usage=Specify the name of the export destination
         	name?: string

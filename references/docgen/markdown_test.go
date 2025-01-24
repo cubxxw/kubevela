@@ -26,6 +26,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -42,11 +43,11 @@ func TestCreateMarkdownForCUE(t *testing.T) {
 
 	time.Sleep(time.Millisecond)
 
-	mr := MarkdownReference{}
-	mr.Local = &FromLocal{Path: "./testdata/testdef.cue"}
-	capp, err := ParseLocalFile(mr.Local.Path, common.Args{})
+	mr := MarkdownReference{ParseReference: ParseReference{Client: fake.NewClientBuilder().Build()}}
+	mr.Local = &FromLocal{Paths: []string{"./testdata/testdef.cue"}}
+	capp, err := ParseLocalFile(mr.Local.Paths[0], common.Args{})
 	assert.NoError(t, err)
-	got, err := mr.GenerateMarkdownForCap(context.Background(), *capp, nil, false)
+	got, err := mr.GenerateMarkdownForCap(context.Background(), *capp, false)
 	assert.NoError(t, err)
 	fmt.Println(got)
 	assert.Contains(t, got, "A test key")
@@ -55,10 +56,10 @@ func TestCreateMarkdownForCUE(t *testing.T) {
 	assert.Contains(t, got, "Examples")
 	assert.Contains(t, got, "Hello, examples/applications/create-namespace.yaml!")
 
-	mr.Local = &FromLocal{Path: "./testdata/testdeftrait.cue"}
-	capp, err = ParseLocalFile(mr.Local.Path, common.Args{})
+	mr.Local = &FromLocal{Paths: []string{"./testdata/testdeftrait.cue"}}
+	capp, err = ParseLocalFile(mr.Local.Paths[0], common.Args{})
 	assert.NoError(t, err)
-	got, err = mr.GenerateMarkdownForCap(context.Background(), *capp, nil, false)
+	got, err = mr.GenerateMarkdownForCap(context.Background(), *capp, false)
 	assert.NoError(t, err)
 	assert.Contains(t, got, "Specify the hostAliases to add")
 	assert.Contains(t, got, "title:  Testdeftrait")
@@ -75,7 +76,6 @@ func TestCreateMarkdown(t *testing.T) {
 
 	workloadName := "workload1"
 	traitName := "trait1"
-	scopeName := "scope1"
 	workloadName2 := "workload2"
 
 	workloadCueTemplate := `
@@ -145,17 +145,6 @@ variable "acl" {
 			},
 			want: nil,
 		},
-		"ScopeTypeCapability": {
-			reason: "invalid capabilities",
-			ref:    ref,
-			capabilities: []types.Capability{
-				{
-					Name: scopeName,
-					Type: types.TypeScope,
-				},
-			},
-			want: fmt.Errorf("type(scope) of the capability(scope1) is not supported for now"),
-		},
 		"TerraformCapabilityInChinese": {
 			reason: "terraform capability",
 			ref:    refZh,
@@ -173,7 +162,7 @@ variable "acl" {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := tc.ref.CreateMarkdown(ctx, tc.capabilities, RefTestDir, false, nil)
+			got := tc.ref.CreateMarkdown(ctx, tc.capabilities, RefTestDir, false)
 			if diff := cmp.Diff(tc.want, got, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nCreateMakrdown(...): -want error, +got error:\n%s", tc.reason, diff)
 			}

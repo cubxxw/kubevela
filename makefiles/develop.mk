@@ -1,9 +1,4 @@
 
-# Run apiserver for velaux(UI)
-.PHONY: run-apiserver
-run-apiserver:
-	go run ./cmd/apiserver/main.go
-
 # Install CRDs and Definitions of Vela Core into a cluster, this is for develop convenient.
 .PHONY: core-install
 core-install: manifests
@@ -30,3 +25,8 @@ core-debug-run: fmt vet manifests
 .PHONY: core-run
 core-run: fmt vet manifests
 	go run ./cmd/core/main.go
+
+## gen-cue: Generate CUE files from Go files. Variable DIR is the directory of the Go files, FLAGS is the flags for vela def gen-cue command.
+.PHONY: gen-cue
+gen-cue:
+	./hack/cuegen/cuegen.sh $(DIR) $(FLAGS)

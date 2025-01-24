@@ -66,14 +66,16 @@ func NewAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 }
 
 // NewAddAddonRegistryCommand return an addon registry create command
-func NewAddAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewAddAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add an addon registry.",
 		Long:  "Add an addon registry.",
 		Example: `add a helm repo registry: vela addon registry add --type=helm my-repo --endpoint=<URL>
-add a github registry: vela addon registry add my-repo --type git --endpoint=<URL> --path=<ptah> --token=<git token>" 
-add a gitlab registry: vela addon registry add my-repo --type gitlab --endpoint=<URL> --gitlabRepoName=<repoName> --path=<path> --token=<git token>`,
+add a github registry: vela addon registry add my-repo --type git --endpoint=<URL> --path=<path> --gitToken=<git token>
+add a specified github registry: vela addon registry add my-repo --type git --endpoint=https://github.com/kubevela/catalog --path=addons --gitToken=<git token>
+add a gitlab registry: vela addon registry add my-repo --type gitlab --endpoint=<URL> --gitlabRepoName=<repoName> --path=<path> --gitToken=<git token>
+add a specified gitlab registry: vela addon registry add my-repo --type gitlab --endpoint=http://gitlab.xxx.com/xxx/catalog --path=addons --gitlabRepoName=catalog --gitToken=<git token>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			registry, err := getRegistryFromArgs(cmd, args)
 			if err != nil {
@@ -90,10 +92,7 @@ add a gitlab registry: vela addon registry add my-repo --type gitlab --endpoint=
 					return fmt.Errorf("fail to add registry %s: %w", registry.Name, err)
 				}
 			}
-			if err := addAddonRegistry(context.Background(), c, *registry); err != nil {
-				return err
-			}
-			return nil
+			return addAddonRegistry(context.Background(), c, *registry)
 		},
 	}
 	parseArgsFromFlag(cmd)
@@ -101,7 +100,7 @@ add a gitlab registry: vela addon registry add my-repo --type gitlab --endpoint=
 }
 
 // NewGetAddonRegistryCommand return an addon registry get command
-func NewGetAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewGetAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	return &cobra.Command{
 		Use:     "get",
 		Short:   "Get an addon registry.",
@@ -122,23 +121,20 @@ func NewGetAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cob
 }
 
 // NewListAddonRegistryCommand return an addon registry list command
-func NewListAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewListAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Short:   "List addon registries.",
 		Long:    "List addon registries.",
 		Example: "vela addon registry list",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := listAddonRegistry(context.Background(), c); err != nil {
-				return err
-			}
-			return nil
+			return listAddonRegistry(context.Background(), c)
 		},
 	}
 }
 
 // NewUpdateAddonRegistryCommand return an addon registry update command
-func NewUpdateAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewUpdateAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "update",
 		Short:   "Update an addon registry.",
@@ -149,10 +145,7 @@ func NewUpdateAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *
 			if err != nil {
 				return err
 			}
-			if err := updateAddonRegistry(context.Background(), c, *registry); err != nil {
-				return err
-			}
-			return nil
+			return updateAddonRegistry(context.Background(), c, *registry)
 		},
 	}
 	parseArgsFromFlag(cmd)
@@ -160,7 +153,7 @@ func NewUpdateAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *
 }
 
 // NewDeleteAddonRegistryCommand return an addon registry delete command
-func NewDeleteAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewDeleteAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	return &cobra.Command{
 		Use:     "delete",
 		Short:   "Delete an addon registry",
@@ -308,11 +301,11 @@ func parseArgsFromFlag(cmd *cobra.Command) {
 	cmd.Flags().StringP(addonRegistryType, "", "", "specify the addon registry type")
 	cmd.Flags().StringP(addonEndpoint, "", "", "specify the addon registry endpoint")
 	cmd.Flags().StringP(addonOssBucket, "", "", "specify the OSS bucket name")
-	cmd.Flags().StringP(addonPath, "", "", "specify the addon registry OSS path")
+	cmd.Flags().StringP(addonPath, "", "", "specify the addon registry path, must be set when addons are not in root of registry")
 	cmd.Flags().StringP(addonGitToken, "", "", "specify the github repo token")
 	cmd.Flags().StringP(addonUsername, "", "", "specify the Helm addon registry username")
 	cmd.Flags().StringP(addonPassword, "", "", "specify the Helm addon registry password")
-	cmd.Flags().StringP(addonRepoName, "", "", "specify the gitlab addon registry repoName")
+	cmd.Flags().StringP(addonRepoName, "", "", "specify the gitlab addon registry repoName, must be set when registry is gitlab")
 	cmd.Flags().BoolP(addonHelmInsecureSkipTLS, "", false,
 		"specify the Helm addon registry skip tls verify")
 }

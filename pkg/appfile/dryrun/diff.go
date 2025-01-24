@@ -24,12 +24,12 @@ import (
 
 	"github.com/aryann/difflib"
 	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
-	"github.com/kubevela/workflow/pkg/cue/packages"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
@@ -37,13 +37,12 @@ import (
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 )
 
 // NewLiveDiffOption creates a live-diff option
-func NewLiveDiffOption(c client.Client, cfg *rest.Config, dm discoverymapper.DiscoveryMapper, pd *packages.PackageDiscover, as []oam.Object) *LiveDiffOption {
-	parser := appfile.NewApplicationParser(c, dm, pd)
-	return &LiveDiffOption{DryRun: NewDryRunOption(c, cfg, dm, pd, as, false), Parser: parser}
+func NewLiveDiffOption(c client.Client, cfg *rest.Config, as []*unstructured.Unstructured) *LiveDiffOption {
+	parser := appfile.NewApplicationParser(c)
+	return &LiveDiffOption{DryRun: NewDryRunOption(c, cfg, as, false), Parser: parser}
 }
 
 // ManifestKind enums the kind of OAM objects
@@ -137,7 +136,7 @@ func (l *LiveDiffOption) RenderlessDiff(ctx context.Context, base, comparor Live
 		m := &manifest{Name: app.Name, Kind: AppKind, Data: string(bs)}
 		if appfileError != nil {
 			m.Data += "Error: " + appfileError.Error() + "\n"
-			return m, nil //nolint
+			return m, nil // nolint
 		}
 		for _, policy := range af.ExternalPolicies {
 			if bs, err = marshalObject(policy); err == nil {
@@ -441,8 +440,8 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 			Name: comp.Name,
 			Kind: RawCompKind,
 		}
-		removeRevisionRelatedLabelAndAnnotation(comp.StandardWorkload)
-		b, err := yaml.Marshal(comp.StandardWorkload)
+		removeRevisionRelatedLabelAndAnnotation(comp.ComponentOutput)
+		b, err := yaml.Marshal(comp.ComponentOutput)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot marshal component %q", comp.Name)
 		}
@@ -460,7 +459,7 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 		comp.RevisionName = ""
 		// get matched raw component and add it into appConfigComponent's subs
 		subs := []*manifest{rawCompManifests[comp.Name]}
-		for _, t := range comp.Traits {
+		for _, t := range comp.ComponentOutputsAndTraits {
 			removeRevisionRelatedLabelAndAnnotation(t)
 
 			tType := t.GetLabels()[oam.TraitTypeLabel]

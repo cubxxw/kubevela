@@ -56,7 +56,7 @@ template: {
 		// +usage=Instructions for assessing container startup status by probing a TCP socket. Either this attribute or the exec attribute or the tcpSocket attribute or the httpGet attribute MUST be specified. This attribute is mutually exclusive with the exec attribute and the httpGet attribute and the gRPC attribute.
 		tcpSocket?: {
 			// +usage=Number or name of the port to access on the container.
-			port: string
+			port: int
 			// +usage=Host name to connect to, defaults to the pod IP.
 			host?: string
 		}
@@ -65,7 +65,7 @@ template: {
 		_params:         #StartupProbeParams
 		name:            _params.containerName
 		_baseContainers: context.output.spec.template.spec.containers
-		_matchContainers_: [ for _container_ in _baseContainers if _container_.name == name {_container_}]
+		_matchContainers_: [for _container_ in _baseContainers if _container_.name == name {_container_}]
 		if len(_matchContainers_) == 0 {
 			err: "container \(name) not found"
 		}
@@ -135,14 +135,14 @@ template: {
 						grpc: parameter.grpc
 					}
 					if parameter.tcpSocket != _|_ {
-						tcpSocket: parameter.grtcpSocketpc
+						tcpSocket: parameter.tcpSocket
 					}
 				}}
 			}]
 		}
 		if parameter.probes != _|_ {
 			// +patchKey=name
-			containers: [ for c in parameter.probes {
+			containers: [for c in parameter.probes {
 				if c.name == "" {
 					err: "containerName must be set when specifying startup probe for multiple containers"
 				}
@@ -158,6 +158,6 @@ template: {
 		probes: [...#StartupProbeParams]
 	})
 
-	errs: [ for c in patch.spec.template.spec.containers if c.err != _|_ {c.err}]
+	errs: [for c in patch.spec.template.spec.containers if c.err != _|_ {c.err}]
 
 }

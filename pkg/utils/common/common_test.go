@@ -25,28 +25,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"cuelang.org/go/cue/cuecontext"
 
 	"cuelang.org/go/cue/load"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-cmp/cmp"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/stretchr/testify/assert"
-	corev1 "k8s.io/api/core/v1"
-
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-	"github.com/oam-dev/kubevela/apis/types"
 )
 
 var ResponseString = "Hello HTTP Get."
-
-func TestInitBaseRestConfig(t *testing.T) {
-	args, err := InitBaseRestConfig()
-	assert.NotNil(t, t, args)
-	assert.NoError(t, err, "you need to have a kubeconfig in your Environment")
-}
 
 func TestHTTPGet(t *testing.T) {
 	type want struct {
@@ -223,25 +213,6 @@ func TestHttpGetCaFile(t *testing.T) {
 	}
 }
 
-func TestHttpGetForbidRedirect(t *testing.T) {
-	var ctx = context.Background()
-	testServer := &http.Server{Addr: ":19090"}
-
-	http.HandleFunc("/redirect", func(writer http.ResponseWriter, request *http.Request) {
-		http.Redirect(writer, request, "http://192.168.1.1", http.StatusFound)
-	})
-
-	go func() {
-		err := testServer.ListenAndServe()
-		assert.NoError(t, err)
-	}()
-	time.Sleep(time.Millisecond)
-
-	_, err := HTTPGetWithOption(ctx, "http://127.0.0.1:19090/redirect", nil)
-	assert.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "got a redirect response which is forbidden"))
-}
-
 func TestGetCUEParameterValue(t *testing.T) {
 	type want struct {
 		err error
@@ -280,7 +251,7 @@ output: {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := GetCUEParameterValue(tc.cueStr, nil)
+			_, err := GetCUEParameterValue(tc.cueStr)
 			if tc.want.err != nil {
 				if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 					t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -319,7 +290,7 @@ func TestGetCUEParameterValue4RareCases(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := GetCUEParameterValue(tc.cueStr, nil)
+			_, err := GetCUEParameterValue(tc.cueStr)
 			if diff := cmp.Diff(tc.want.errMsg, err.Error(), test.EquateConditions()); diff != "" {
 				t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -362,9 +333,61 @@ func TestGenOpenAPI(t *testing.T) {
 			instances := load.Instances([]string{filepath.FromSlash(tc.fileName)}, &load.Config{
 				Dir: "testdata",
 			})
-			val, err := value.NewValueWithInstance(instances[0], nil, "")
-			assert.NoError(t, err)
+			val := cuecontext.New().BuildInstance(instances[0])
 			got, err := GenOpenAPI(val)
+			if tc.want.err != nil {
+				if diff := cmp.Diff(tc.want.err, errors.New(err.Error()), test.EquateErrors()); diff != "" {
+					t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
+				}
+			}
+			if tc.want.targetSchemaFile == "" {
+				return
+			}
+			wantSchema, _ := os.ReadFile(filepath.Join("testdata", tc.want.targetSchemaFile))
+			if diff := cmp.Diff(wantSchema, got); diff != "" {
+				t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestGenOpenAPIWithCueX(t *testing.T) {
+	type want struct {
+		targetSchemaFile string
+		err              error
+	}
+	cases := map[string]struct {
+		reason       string
+		fileName     string
+		targetSchema string
+		want         want
+	}{
+		"GenOpenAPI": {
+			reason:   "generate valid OpenAPI schema with context",
+			fileName: "workload1.cue",
+			want: want{
+				targetSchemaFile: "workload1.json",
+				err:              nil,
+			},
+		},
+		"EmptyOpenAPI": {
+			reason:   "generate empty OpenAPI schema",
+			fileName: "emptyParameter.cue",
+			want: want{
+				targetSchemaFile: "emptyParameter.json",
+				err:              nil,
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			instances := load.Instances([]string{filepath.FromSlash(tc.fileName)}, &load.Config{
+				Dir: "testdata",
+			})
+			val := cuecontext.New().BuildInstance(instances[0])
+			assert.NoError(t, val.Err())
+			got, err := GenOpenAPIWithCueX(val)
 			if tc.want.err != nil {
 				if diff := cmp.Diff(tc.want.err, errors.New(err.Error()), test.EquateErrors()); diff != "" {
 					t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -484,10 +507,10 @@ patch: {
 	label: parameter.x
 	}
 }`
-	val, err := value.NewValue(s, nil, "")
-	assert.NoError(t, err)
-	assert.NoError(t, val.CueValue().Err())
-	_, err = RefineParameterValue(val)
+	cuectx := cuecontext.New()
+	val := cuectx.CompileString(s)
+	assert.NoError(t, val.Err())
+	_, err := RefineParameterValue(val)
 	assert.NoError(t, err)
 	// test #parameter not exist but parameter exists
 	s = `parameter: {
@@ -496,85 +519,59 @@ patch: {
 	y: string
 	}
 }`
-	val, err = value.NewValue(s, nil, "")
-	assert.NoError(t, err)
-	assert.NoError(t, val.CueValue().Err())
+	val = cuectx.CompileString(s)
+	assert.NoError(t, val.Err())
 	assert.NoError(t, err)
 	_, err = RefineParameterValue(val)
 	assert.NoError(t, err)
 	// test #parameter as int
 	s = `parameter: #parameter
 #parameter: int`
-	val, err = value.NewValue(s, nil, "")
+	val = cuectx.CompileString(s)
 	assert.NoError(t, err)
-	assert.NoError(t, val.CueValue().Err())
+	assert.NoError(t, val.Err())
 	_, err = RefineParameterValue(val)
 	assert.NoError(t, err)
 }
 
-func TestFilterClusterObjectRefFromAddonObservability(t *testing.T) {
-	ref := common.ClusterObjectReference{}
-	ref.Name = AddonObservabilityGrafanaSvc
-	ref.Namespace = types.DefaultKubeVelaNS
-	resources := []common.ClusterObjectReference{ref}
-
-	res := filterClusterObjectRefFromAddonObservability(resources)
-	assert.Equal(t, 1, len(res))
-	assert.Equal(t, "Service", res[0].Kind)
-	assert.Equal(t, "v1", res[0].APIVersion)
-}
-
-func TestResourceNameClusterObjectReferenceFilter(t *testing.T) {
-	fooRef := common.ClusterObjectReference{
-		ObjectReference: corev1.ObjectReference{
-			Name: "foo",
-		}}
-	barRef := common.ClusterObjectReference{
-		ObjectReference: corev1.ObjectReference{
-			Name: "bar",
-		}}
-	bazRef := common.ClusterObjectReference{
-		ObjectReference: corev1.ObjectReference{
-			Name: "baz",
-		}}
-	var refs = []common.ClusterObjectReference{
-		fooRef, barRef, bazRef,
-	}
-
-	testCases := []struct {
-		caseName     string
-		filter       clusterObjectReferenceFilter
-		filteredRefs []common.ClusterObjectReference
-	}{
-		{
-			caseName:     "filter one resource",
-			filter:       resourceNameClusterObjectReferenceFilter([]string{"foo"}),
-			filteredRefs: []common.ClusterObjectReference{fooRef},
-		},
-		{
-			caseName:     "not filter resources",
-			filter:       resourceNameClusterObjectReferenceFilter([]string{}),
-			filteredRefs: []common.ClusterObjectReference{fooRef, barRef, bazRef},
-		},
-		{
-			caseName:     "filter multi resources",
-			filter:       resourceNameClusterObjectReferenceFilter([]string{"foo", "bar"}),
-			filteredRefs: []common.ClusterObjectReference{fooRef, barRef},
-		},
-	}
-	for _, c := range testCases {
-		filteredResource := filterResource(refs, c.filter)
-		assert.Equal(t, c.filteredRefs, filteredResource, c.caseName)
+func TestFillParameterDefinitionFieldIfNotExist(t *testing.T) {
+	// test #parameter exists: mock issues in #1939 & #2062
+	s := `parameter: #parameter
+#parameter: {
+	x?: string
+	if x != "" {
+	y: string
 	}
 }
-
-func TestRemoveEmptyString(t *testing.T) {
-	withEmpty := []string{"foo", "bar", "", "baz", ""}
-	noEmpty := removeEmptyString(withEmpty)
-	assert.Equal(t, len(noEmpty), 3)
-	for _, s := range noEmpty {
-		assert.NotEmpty(t, s)
+patch: {
+	if parameter.x != "" {
+	label: parameter.x
 	}
+}`
+	val := cuecontext.New().CompileString(s)
+	assert.NoError(t, val.Err())
+	filledVal := FillParameterDefinitionFieldIfNotExist(val)
+	assert.NoError(t, filledVal.Err())
+
+	// test #parameter not exist but parameter exists
+	s = `parameter: {
+		x?: string
+		if x != "" {
+		y: string
+		}
+	}`
+	val = cuecontext.New().CompileString(s)
+	assert.NoError(t, val.Err())
+	filledVal = FillParameterDefinitionFieldIfNotExist(val)
+	assert.NoError(t, filledVal.Err())
+
+	// test #parameter as int
+	s = `parameter: #parameter
+	#parameter: int`
+	val = cuecontext.New().CompileString(s)
+	assert.NoError(t, val.Err())
+	filledVal = FillParameterDefinitionFieldIfNotExist(val)
+	assert.NoError(t, filledVal.Err())
 }
 
 func TestHTTPGetKubernetesObjects(t *testing.T) {

@@ -50,7 +50,7 @@ import (
 
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	velaerr "github.com/oam-dev/kubevela/pkg/utils/errors"
-	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
+	querytypes "github.com/oam-dev/kubevela/pkg/utils/types"
 )
 
 // MutateOption defines the function pattern for mutate
@@ -92,12 +92,26 @@ func MergeNoConflictLabels(labels map[string]string) MutateOption {
 // CreateOrUpdateNamespace will create a namespace if not exist, it will also update a namespace if exists
 // It will report an error if the labels conflict while it will override the annotations
 func CreateOrUpdateNamespace(ctx context.Context, kubeClient client.Client, name string, options ...MutateOption) error {
-	err := CreateNamespace(ctx, kubeClient, name, options...)
-	// only if namespace don't have the env label that we need to update it
-	if apierrors.IsAlreadyExists(err) {
-		return UpdateNamespace(ctx, kubeClient, name, options...)
+	ns, err := GetNamespace(ctx, kubeClient, name)
+	switch {
+	case err == nil:
+		return PatchNamespace(ctx, kubeClient, ns, options...)
+	case apierrors.IsNotFound(err):
+		return CreateNamespace(ctx, kubeClient, name, options...)
+	default:
+		return err
 	}
-	return err
+}
+
+// PatchNamespace will patch a namespace
+func PatchNamespace(ctx context.Context, kubeClient client.Client, ns *corev1.Namespace, options ...MutateOption) error {
+	original := ns.DeepCopy()
+	for _, op := range options {
+		if err := op(ns); err != nil {
+			return err
+		}
+	}
+	return kubeClient.Patch(ctx, ns, client.MergeFrom(original))
 }
 
 // CreateNamespace will create a namespace with mutate option
@@ -169,14 +183,6 @@ func GetUserInfoFromConfig(cfg *rest.Config) *authv1.UserInfo {
 		return &authv1.UserInfo{Username: cn, Groups: orgs}
 	}
 	return nil
-}
-
-// AutoSetSelfImpersonationInConfig set impersonate username and group to the identity in the original rest config
-func AutoSetSelfImpersonationInConfig(cfg *rest.Config) {
-	if userInfo := GetUserInfoFromConfig(cfg); userInfo != nil {
-		cfg.Impersonate.UserName = userInfo.Username
-		cfg.Impersonate.Groups = append(cfg.Impersonate.Groups, userInfo.Groups...)
-	}
 }
 
 // CreateOrUpdate create or update a kubernetes object
@@ -393,9 +399,8 @@ func contains(object *runtime.Object, fieldSelector fields.Selector) bool {
 		if (negative && fmt.Sprintf("%v", result.String()) != value) ||
 			(!negative && fmt.Sprintf("%v", result.String()) == value) {
 			continue
-		} else {
-			return false
 		}
+		return false
 	}
 	return true
 }

@@ -23,58 +23,10 @@ import (
 )
 
 var (
-	// CreateAppHandlerDurationHistogram report the create appHandler execution duration.
-	CreateAppHandlerDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "create_app_handler_time_seconds",
-		Help:        "create appHandler duration distributions, this operate will list ResourceTrackers.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller"})
-
-	// HandleFinalizersDurationHistogram report the handle finalizers execution duration.
-	HandleFinalizersDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "handle_finalizers_time_seconds",
-		Help:        "handle finalizers duration distributions.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller", "type"})
-
-	// ParseAppFileDurationHistogram report the parse appFile execution duration.
-	ParseAppFileDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "parse_appFile_time_seconds",
-		Help:        "parse appFile duration distributions.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller"})
-
-	// PrepareCurrentAppRevisionDurationHistogram report the parse current appRevision execution duration.
-	PrepareCurrentAppRevisionDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "prepare_current_appRevision_time_seconds",
-		Help:        "parse current appRevision duration distributions.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller"})
-
-	// ApplyAppRevisionDurationHistogram report the apply appRevision execution duration.
-	ApplyAppRevisionDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "apply_appRevision_time_seconds",
-		Help:        "apply appRevision duration distributions.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller"})
-
-	// ApplyPoliciesDurationHistogram report execution duration for applying policies
-	ApplyPoliciesDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "apply_policies",
-		Help:        "render and dispatch policy duration distributions.",
-		Buckets:     velametrics.FineGrainedBuckets,
-		ConstLabels: prometheus.Labels{},
-	}, []string{"controller"})
-
-	// GCResourceTrackersDurationHistogram report the gc resourceTrackers execution duration.
-	GCResourceTrackersDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:        "gc_resourceTrackers_time_seconds",
-		Help:        "gc resourceTrackers duration distributions.",
+	// AppReconcileStageDurationHistogram report staged reconcile time for application
+	AppReconcileStageDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:        "kubevela_app_reconcile_time_seconds",
+		Help:        "application reconcile time costs.",
 		Buckets:     velametrics.FineGrainedBuckets,
 		ConstLabels: prometheus.Labels{},
 	}, []string{"stage"})
@@ -103,12 +55,6 @@ var (
 		ConstLabels: prometheus.Labels{},
 	}, []string{"phase"})
 
-	// WorkflowInitializedCounter report the workflow initialize execute number.
-	WorkflowInitializedCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "workflow_initialized_num",
-		Help: "workflow initialize times",
-	}, []string{})
-
 	// ApplicationPhaseCounter report the number of application phase
 	ApplicationPhaseCounter = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "application_phase_number",
@@ -127,13 +73,5 @@ var (
 	ListResourceTrackerCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "list_resourcetracker_num",
 		Help: "list resourceTrackers times.",
-	}, []string{"controller"})
-)
-
-var (
-	// ResourceTrackerNumberGauge report the number of resourceTracker
-	ResourceTrackerNumberGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "resourcetracker_number",
-		Help: "resourceTracker number.",
 	}, []string{"controller"})
 )

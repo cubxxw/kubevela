@@ -24,11 +24,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/oam-dev/kubevela/pkg/velaql/providers/query"
-	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
+	querytypes "github.com/oam-dev/kubevela/pkg/utils/types"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers/legacy/query"
 )
 
 var _ = Describe("test resource", func() {
@@ -77,14 +77,13 @@ var _ = Describe("test resource", func() {
 })
 
 func TestSonLeafResource(t *testing.T) {
-	res := querytypes.AppliedResource{}
 	node := &querytypes.ResourceTreeNode{
 		LeafNodes: []*querytypes.ResourceTreeNode{
 			{
-				Object: unstructured.Unstructured{},
+				Object: &unstructured.Unstructured{},
 			},
 		},
 	}
-	objs := sonLeafResource(res, node, "", "")
+	objs := sonLeafResource(node, "", "")
 	assert.Equal(t, len(objs), 2)
 }

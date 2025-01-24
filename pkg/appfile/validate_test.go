@@ -17,8 +17,7 @@ limitations under the License.
 package appfile
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/oam-dev/kubevela/apis/types"
@@ -35,7 +34,7 @@ var _ = Describe("Test validate CUE schematic Appfile", func() {
 
 	DescribeTable("Test validate outputs name unique", func(tc SubTestCase) {
 		Expect("").Should(BeEmpty())
-		wl := &Workload{
+		wl := &Component{
 			Name:               "myweb",
 			Type:               "worker",
 			CapabilityCategory: types.CUECategory,
@@ -44,19 +43,19 @@ var _ = Describe("Test validate CUE schematic Appfile", func() {
 					Name:               "myscaler",
 					CapabilityCategory: types.CUECategory,
 					Template:           tc.traitDefTmpl1,
-					engine:             definition.NewTraitAbstractEngine("myscaler", pd),
+					engine:             definition.NewTraitAbstractEngine("myscaler"),
 				},
 				{
 					Name:               "myingress",
 					CapabilityCategory: types.CUECategory,
 					Template:           tc.traitDefTmpl2,
-					engine:             definition.NewTraitAbstractEngine("myingress", pd),
+					engine:             definition.NewTraitAbstractEngine("myingress"),
 				},
 			},
 			FullTemplate: &Template{
 				TemplateStr: tc.compDefTmpl,
 			},
-			engine: definition.NewWorkloadAbstractEngine("myweb", pd),
+			engine: definition.NewWorkloadAbstractEngine("myweb"),
 		}
 
 		ctxData := GenerateContextDataFromAppFile(&Appfile{

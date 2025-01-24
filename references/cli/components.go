@@ -37,12 +37,12 @@ import (
 )
 
 // NewComponentsCommand creates `components` command
-func NewComponentsCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewComponentsCommand(c common2.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	var isDiscover bool
 	cmd := &cobra.Command{
 		Use:     "component",
 		Aliases: []string{"comp", "components"},
-		Short:   "List/get components",
+		Short:   "List/get components.",
 		Long:    "List component types installed and discover more in registry.",
 		Example: `vela comp`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -76,7 +76,8 @@ func NewComponentsCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Co
 			return PrintInstalledCompDef(c, ioStreams, filter)
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeExtension,
+			types.TagCommandType:  types.TypeExtension,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.SetOut(ioStreams.Out)
@@ -189,7 +190,7 @@ func PrintComponentListFromRegistry(registry Registry, ioStreams cmdutil.IOStrea
 
 // InstallCompByNameFromRegistry will install given componentName comp to cluster from registry
 func InstallCompByNameFromRegistry(args common2.Args, ioStream cmdutil.IOStreams, compName string, registry Registry) error {
-	capObj, data, err := registry.GetCap(compName)
+	_, data, err := registry.GetCap(compName)
 	if err != nil {
 		return err
 	}
@@ -199,7 +200,7 @@ func InstallCompByNameFromRegistry(args common2.Args, ioStream cmdutil.IOStreams
 		return err
 	}
 
-	err = common.InstallComponentDefinition(k8sClient, data, ioStream, &capObj)
+	err = common.InstallComponentDefinition(k8sClient, data, ioStream)
 	if err != nil {
 		return err
 	}
@@ -220,10 +221,6 @@ func PrintInstalledCompDef(c common2.Args, io cmdutil.IOStreams, filter filterFu
 	if err != nil {
 		return errors.Wrap(err, "get component definition list error")
 	}
-	dm, err := (&common2.Args{}).GetDiscoveryMapper()
-	if err != nil {
-		return errors.Wrap(err, "get discovery mapper error")
-	}
 
 	table := newUITable()
 	table.AddRow("NAME", "DEFINITION", "DESCRIPTION")
@@ -234,7 +231,7 @@ func PrintInstalledCompDef(c common2.Args, io cmdutil.IOStreams, filter filterFu
 			io.Infof("error encoding definition: %s\n", cd.Name)
 			continue
 		}
-		capa, err := ParseCapability(dm, data)
+		capa, err := ParseCapability(clt.RESTMapper(), data)
 		if err != nil {
 			io.Errorf("error parsing capability: %s\n", cd.Name)
 			continue

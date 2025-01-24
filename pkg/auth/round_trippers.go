@@ -21,11 +21,11 @@ package auth
 import (
 	"net/http"
 
+	"github.com/kubevela/pkg/util/net"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/transport"
-
-	"github.com/oam-dev/kubevela/pkg/utils"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -50,6 +50,7 @@ func (rt *impersonatingRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	ctx := req.Context()
 	req = req.Clone(ctx)
 	userInfo, exists := request.UserFrom(ctx)
+	klog.V(7).Infof("impersonation request log. path: %s method: %s user info: %+v", req.URL.String(), req.Method, userInfo)
 	if exists && userInfo != nil {
 		if name := userInfo.GetName(); name != "" {
 			req.Header.Set(transport.ImpersonateUserHeader, name)
@@ -65,7 +66,7 @@ func (rt *impersonatingRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 }
 
 func (rt *impersonatingRoundTripper) CancelRequest(req *http.Request) {
-	utils.TryCancelRequest(rt.WrappedRoundTripper(), req)
+	net.TryCancelRequest(rt.WrappedRoundTripper(), req)
 }
 
 func (rt *impersonatingRoundTripper) WrappedRoundTripper() http.RoundTripper {

@@ -1,10 +1,12 @@
 import (
-	"vela/op"
+	"vela/builtin"
 )
 
 "print-message-in-status": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "Process Control"
+	}
 	description: "print message in workflow step status"
 }
 
@@ -13,7 +15,7 @@ template: {
 		message: string
 	}
 
-	msg: op.#Message & {
-		message: parameter.message
+	msg: builtin.#Message & {
+		$params: parameter
 	}
 }

@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -43,8 +43,6 @@ var app v1beta1.Application
 var testShowCdDef v1beta1.ComponentDefinition
 var testShowTdDef v1beta1.TraitDefinition
 var testCdDef v1beta1.ComponentDefinition
-var testCdDefWithHelm v1beta1.ComponentDefinition
-var testCdDefWithKube v1beta1.ComponentDefinition
 var testCdWithDeepCue v1beta1.ComponentDefinition
 var testTdDef v1beta1.TraitDefinition
 var testTdDefWithKube v1beta1.TraitDefinition
@@ -55,7 +53,7 @@ func TestKubectlPlugin(t *testing.T) {
 }
 
 var testRegistryPath string
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	err := clientgoscheme.AddToScheme(scheme)
 	Expect(err).Should(BeNil())
 	err = core.AddToScheme(scheme)
@@ -78,14 +76,6 @@ var _ = BeforeSuite(func(done Done) {
 	By("apply test definitions")
 	Expect(yaml.Unmarshal([]byte(componentDef), &testCdDef)).Should(BeNil())
 	err = k8sClient.Create(ctx, &testCdDef)
-	Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-
-	Expect(yaml.Unmarshal([]byte(componentDefWithHelm), &testCdDefWithHelm)).Should(BeNil())
-	err = k8sClient.Create(ctx, &testCdDefWithHelm)
-	Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-
-	Expect(yaml.Unmarshal([]byte(componentDefWithKube), &testCdDefWithKube)).Should(BeNil())
-	err = k8sClient.Create(ctx, &testCdDefWithKube)
 	Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 
 	Expect(yaml.Unmarshal([]byte(componentWithDeepCue), &testCdWithDeepCue)).Should(BeNil())
@@ -117,16 +107,13 @@ var _ = BeforeSuite(func(done Done) {
 	testRegistryPath, err = filepath.Abs("testdata")
 	testRegistryPath = "file://" + testRegistryPath
 	Expect(err).Should(BeNil())
-	close(done)
-}, 300)
+})
 
 var _ = AfterSuite(func() {
 	By("delete application and definitions")
 
 	Expect(k8sClient.Delete(ctx, &app)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testCdDef)).Should(BeNil())
-	Expect(k8sClient.Delete(ctx, &testCdDefWithHelm)).Should(BeNil())
-	Expect(k8sClient.Delete(ctx, &testCdDefWithKube)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testCdWithDeepCue)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testTdDef)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testTdDefWithKube)).Should(BeNil())

@@ -3,6 +3,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "kubevela.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "kubevela.labels" . | nindent 4 }}
   {{- with .Values.serviceAccount.annotations }}
@@ -48,10 +49,12 @@ rules:
   - apiGroups: ["flowcontrol.apiserver.k8s.io"]
     resources: ["prioritylevelconfigurations", "flowschemas"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["*"]
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["*"]
-
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
@@ -85,12 +88,41 @@ subjects:
     namespace: {{ .Release.Namespace }}
 
 {{ end }}
+
+
+{{ if and .Values.sharding.enabled .Values.authentication.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubevela.fullname" . }}:shard-scheduler
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubevela.fullname" . }}:shard-scheduler
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubevela.fullname" . }}:shard-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubevela.serviceAccountName" . }}
+{{ end }}
+
 ---
 # permissions to do leader election.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "kubevela.fullname" . }}:leader-election-role
+  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups:
       - ""
@@ -124,6 +156,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "kubevela.fullname" . }}:leader-election-rolebinding
+  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -138,6 +171,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "kubevela.fullname" . }}:template-reader-role
+  namespace: {{ .Release.Namespace }}
 rules:
   - apiGroups:
       - ""
@@ -158,6 +192,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "kubevela.fullname" . }}:template-reader-binding
+  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -183,6 +218,9 @@ spec:
     metadata:
       labels:
     {{- include "kubevela.selectorLabels" . | nindent 8 }}
+        {{ if .Values.sharding.enabled }}
+        controller.core.oam.dev/shard-id: master
+        {{ end }}
       annotations:
           prometheus.io/path: /metrics
           prometheus.io/port: "8080"
@@ -217,12 +255,6 @@ spec:
             {{ if ne .Values.optimize.cachedGvks "" }}
             - "--optimize-cached-gvks={{ .Values.optimize.cachedGvks }}"
             {{ end }}
-            {{ if not .Values.optimize.resourceTrackerListOp }}
-            - "--optimize-resource-tracker-list-op=false"
-            {{ end }}
-            {{ if .Values.optimize.controllerReconcileLoopReduction }}
-            - "--optimize-controller-reconcile-loop-reduction"
-            {{ end }}
             {{ if .Values.optimize.markWithProb }}
             - "--optimize-mark-with-prob={{ .Values.optimize.markWithProb }}"
             {{ end }}
@@ -231,9 +263,6 @@ spec:
             {{ end }}
             {{ if .Values.optimize.disableApplicationRevision }}
             - "--optimize-disable-application-revision"
-            {{ end }}
-            {{ if .Values.optimize.disableWorkflowRecorder }}
-            - "--optimize-disable-workflow-recorder"
             {{ end }}
             {{ if .Values.optimize.enableInMemoryWorkflowContext }}
             - "--optimize-enable-in-memory-workflow-context"
@@ -245,15 +274,17 @@ spec:
             - "--optimize-enable-resource-tracker-delete-only-trigger=false"
             {{ end }}
             - "--health-addr=:{{ .Values.healthCheck.port }}"
-            {{ if ne .Values.disableCaps "" }}
-            - "--disable-caps={{ .Values.disableCaps }}"
-            {{ end }}
             - "--system-definition-namespace={{ include "systemDefinitionNamespace" . }}"
             - "--application-revision-limit={{ .Values.applicationRevisionLimit }}"
             - "--definition-revision-limit={{ .Values.definitionRevisionLimit }}"
-            - "--oam-spec-ver={{ .Values.OAMSpecVer }}"
             {{ if .Values.multicluster.enabled }}
             - "--enable-cluster-gateway"
+            {{ if .Values.multicluster.clusterGateway.direct }}
+            - "--cluster-gateway-url={{ .Release.Name }}-cluster-gateway-service:9443"
+            {{ if .Values.multicluster.clusterGateway.secureTLS.enabled }}
+            - "--cluster-gateway-ca-file=/cluster-gateway-tls-cert/ca"
+            {{ end }}
+            {{ end }}
             {{ end }}
             {{ if .Values.multicluster.metrics.enabled }}
             - "--enable-cluster-metrics"
@@ -265,22 +296,34 @@ spec:
             - "--max-workflow-wait-backoff-time={{ .Values.workflow.backoff.maxTime.waitState }}"
             - "--max-workflow-failed-backoff-time={{ .Values.workflow.backoff.maxTime.failedState }}"
             - "--max-workflow-step-error-retry-times={{ .Values.workflow.step.errorRetryTimes }}"
+            - "--enable-external-package-for-default-compiler={{ .Values.workflow.enableExternalPackageForDefaultCompiler }}"
+            - "--enable-external-package-watch-for-default-compiler={{ .Values.workflow.enableExternalPackageWatchForDefaultCompiler }}"
             - "--feature-gates=EnableSuspendOnFailure={{- .Values.workflow.enableSuspendOnFailure | toString -}}"
             - "--feature-gates=AuthenticateApplication={{- .Values.authentication.enabled | toString -}}"
-            - "--feature-gates=LegacyComponentRevision={{- .Values.featureGates.enableLegacyComponentRevision | toString -}}"
             - "--feature-gates=GzipResourceTracker={{- .Values.featureGates.gzipResourceTracker | toString -}}"
             - "--feature-gates=ZstdResourceTracker={{- .Values.featureGates.zstdResourceTracker | toString -}}"
             - "--feature-gates=ApplyOnce={{- .Values.featureGates.applyOnce | toString -}}"
             - "--feature-gates=MultiStageComponentApply= {{- .Values.featureGates.multiStageComponentApply | toString -}}"
-            - "--feature-gates=GzipApplicationRevision={{- .Values.featureGates.gzipResourceTracker | toString -}}"
-            - "--feature-gates=ZstdApplicationRevision={{- .Values.featureGates.zstdResourceTracker | toString -}}"
+            - "--feature-gates=GzipApplicationRevision={{- .Values.featureGates.gzipApplicationRevision | toString -}}"
+            - "--feature-gates=ZstdApplicationRevision={{- .Values.featureGates.zstdApplicationRevision | toString -}}"
             - "--feature-gates=PreDispatchDryRun={{- .Values.featureGates.preDispatchDryRun | toString -}}"
+            - "--feature-gates=DisableBootstrapClusterInfo={{- .Values.featureGates.disableBootstrapClusterInfo | toString -}}"
+            - "--feature-gates=InformerCacheFilterUnnecessaryFields={{- .Values.featureGates.informerCacheFilterUnnecessaryFields | toString -}}"
+            - "--feature-gates=SharedDefinitionStorageForApplicationRevision={{- .Values.featureGates.sharedDefinitionStorageForApplicationRevision | toString -}}"
+            - "--feature-gates=DisableWorkflowContextConfigMapCache={{- .Values.featureGates.disableWorkflowContextConfigMapCache | toString -}}"
+            - "--feature-gates=EnableCueValidation={{- .Values.featureGates.enableCueValidation | toString -}}"
             {{ if .Values.authentication.enabled }}
             {{ if .Values.authentication.withUser }}
             - "--authentication-with-user"
             {{ end }}
             - "--authentication-default-user={{ .Values.authentication.defaultUser }}"
             - "--authentication-group-pattern={{ .Values.authentication.groupPattern }}"
+            {{ end }}
+            {{ if .Values.sharding.enabled }}
+            - "--enable-sharding"
+            - "--schedulable-shards={{ .Values.sharding.schedulableShards }}"
+            - "--feature-gates=ValidateComponentWhenSharding={{- .Values.featureGates.validateComponentWhenSharding | toString -}}"
+            - "--feature-gates=DisableWebhookAutoSchedule={{- .Values.featureGates.disableWebhookAutoSchedule | toString -}}"
             {{ end }}
           image: {{ .Values.imageRegistry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}
           imagePullPolicy: {{ quote .Values.image.pullPolicy }}
@@ -298,18 +341,29 @@ spec:
             httpGet:
               path: /readyz
               port: healthz
-            initialDelaySeconds: 30
-            periodSeconds: 5
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            successThreshold: {{ .Values.readinessProbe.successThreshold }}
           livenessProbe:
             httpGet:
               path: /healthz
               port: healthz
-            initialDelaySeconds: 90
-            periodSeconds: 5
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            successThreshold: {{ .Values.livenessProbe.successThreshold }}
           volumeMounts:
             - mountPath: {{ .Values.admissionWebhooks.certificate.mountPath }}
               name: tls-cert-vol
               readOnly: true
+          {{ if and .Values.multicluster.enabled .Values.multicluster.clusterGateway.secureTLS.enabled .Values.multicluster.clusterGateway.direct }}
+            - mountPath: /cluster-gateway-tls-cert
+              name: tls-cert-vol-cg
+              readOnly: true
+          {{ end }}
           {{ end }}
       {{ if .Values.admissionWebhooks.enabled }}
       volumes:
@@ -317,15 +371,30 @@ spec:
           secret:
             defaultMode: 420
             secretName: {{ template "kubevela.fullname" . }}-admission
+      {{ if and .Values.multicluster.enabled .Values.multicluster.clusterGateway.secureTLS.enabled .Values.multicluster.clusterGateway.direct }}
+        - name: tls-cert-vol-cg
+          secret:
+            defaultMode: 420
+            secretName: {{ template "kubevela.fullname" . }}-cluster-gateway-tls-v2
+      {{ end }}
       {{ end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
       {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
       affinity:
-      {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{ if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{ else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "kubevela.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+              weight: 100
+      {{ end }}
       {{- with .Values.tolerations }}
       tolerations:
     {{- toYaml . | nindent 8 }}

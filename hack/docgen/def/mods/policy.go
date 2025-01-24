@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubevela/pkg/util/singleton"
+
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/references/docgen"
@@ -33,10 +35,10 @@ const (
 	PolicyDefRefPath = "../kubevela.io/docs/end-user/policies/references.md"
 	// PolicyDefRefPathZh is the target path for kubevela.io policy ref docs in Chinese
 	PolicyDefRefPathZh = "../kubevela.io/i18n/zh/docusaurus-plugin-content-docs/current/end-user/policies/references.md"
-
-	// PolicyDefDir store inner CUE definition
-	PolicyDefDir = "./vela-templates/definitions/internal/policy/"
 )
+
+// PolicyDefDirs store inner CUE definition
+var PolicyDefDirs = []string{"./vela-templates/definitions/internal/policy/"}
 
 // CustomPolicyHeaderEN .
 var CustomPolicyHeaderEN = `---
@@ -58,8 +60,8 @@ title: 内置策略列表
 
 // PolicyDef generate policy def reference doc
 func PolicyDef(ctx context.Context, c common.Args, opt Options) {
-	if opt.DefDir == "" {
-		opt.DefDir = PolicyDefDir
+	if len(opt.DefDirs) == 0 {
+		opt.DefDirs = PolicyDefDirs
 	}
 	ref := &docgen.MarkdownReference{
 		AllInOne:     true,
@@ -72,21 +74,25 @@ func PolicyDef(ctx context.Context, c common.Args, opt Options) {
 				return false
 			}
 			// only print capability which contained in cue def
-			files, err := os.ReadDir(opt.DefDir)
-			if err != nil {
-				fmt.Println("read dir err", opt.DefDir, err)
-				return false
-			}
-			for _, f := range files {
-				if strings.Contains(f.Name(), capability.Name) {
-					return true
+			for _, dir := range opt.DefDirs {
+				files, err := os.ReadDir(dir)
+				if err != nil {
+					fmt.Println("read dir err", opt.DefDirs, err)
+					return false
+				}
+				for _, f := range files {
+					if strings.Contains(f.Name(), capability.Name) {
+						return true
+					}
 				}
 			}
 			return false
 		},
 		CustomDocHeader: CustomPolicyHeaderEN,
 	}
-	ref.Local = &docgen.FromLocal{Path: PolicyDefDir}
+	ref.Local = &docgen.FromLocal{Paths: PolicyDefDirs}
+	ref.Client = singleton.KubeClient.Get()
+
 	if opt.Path != "" {
 		ref.I18N = &docgen.En
 		if strings.Contains(opt.Location, "zh") || strings.Contains(opt.Location, "chinese") {

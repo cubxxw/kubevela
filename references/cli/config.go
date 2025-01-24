@@ -41,13 +41,14 @@ import (
 )
 
 // ConfigCommandGroup commands for the config
-func ConfigCommandGroup(f velacmd.Factory, streams util.IOStreams) *cobra.Command {
+func ConfigCommandGroup(f velacmd.Factory, order string, streams util.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: i18n.T("Manage the configs."),
 		Long:  i18n.T("Manage the configs, such as the terraform provider, image registry, helm repository, etc."),
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeCD,
+			types.TagCommandType:  types.TypePlatform,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.AddCommand(NewListConfigCommand(f, streams))
@@ -58,13 +59,14 @@ func ConfigCommandGroup(f velacmd.Factory, streams util.IOStreams) *cobra.Comman
 }
 
 // TemplateCommandGroup commands for the template of the config
-func TemplateCommandGroup(f velacmd.Factory, streams util.IOStreams) *cobra.Command {
+func TemplateCommandGroup(f velacmd.Factory, order string, streams util.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config-template",
 		Aliases: []string{"ct"},
 		Short:   i18n.T("Manage the template of config."),
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeExtension,
+			types.TagCommandType:  types.TypePlatform,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.AddCommand(NewTemplateApplyCommand(f, streams))
@@ -109,7 +111,7 @@ func NewTemplateApplyCommand(f velacmd.Factory, streams util.IOStreams) *cobra.C
 				return err
 			}
 			inf := config.NewConfigFactory(f.Client())
-			template, err := inf.ParseTemplate(options.Name, body)
+			template, err := inf.ParseTemplate(cmd.Context(), options.Name, body)
 			if err != nil {
 				return err
 			}
@@ -142,7 +144,7 @@ func NewTemplateListCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Co
 			if options.AllNamespace {
 				options.Namespace = ""
 			}
-			templates, err := inf.ListTemplates(context.Background(), options.Namespace, "")
+			templateList, err := inf.ListTemplates(context.Background(), options.Namespace, "")
 			if err != nil {
 				return err
 			}
@@ -152,7 +154,7 @@ func NewTemplateListCommand(f velacmd.Factory, streams util.IOStreams) *cobra.Co
 				header = append([]interface{}{"NAMESPACE"}, header...)
 			}
 			table.AddRow(header...)
-			for _, t := range templates {
+			for _, t := range templateList {
 				row := []interface{}{t.Name, t.Alias, t.Scope, t.Sensitive, t.CreateTime}
 				if options.AllNamespace {
 					row = append([]interface{}{t.Namespace}, row...)

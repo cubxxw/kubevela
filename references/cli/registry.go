@@ -33,17 +33,23 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
-	"github.com/oam-dev/kubevela/references/apis"
 	"github.com/oam-dev/kubevela/references/docgen"
 )
+
+// RegistryConfig is used to store registry config in file
+type RegistryConfig struct {
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
 
 // NewRegistryCommand Manage Capability Center
 func NewRegistryCommand(ioStream cmdutil.IOStreams, order string) *cobra.Command {
@@ -53,7 +59,7 @@ func NewRegistryCommand(ioStream cmdutil.IOStreams, order string) *cobra.Command
 		Long:  "Manage Registry of X-Definitions for extension.",
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
-			types.TagCommandType:  types.TypeExtension,
+			types.TagCommandType:  types.TypeLegacy,
 		},
 	}
 	cmd.AddCommand(
@@ -150,7 +156,7 @@ func listCapRegistrys(ioStreams cmdutil.IOStreams) error {
 
 // addRegistry will add a registry
 func addRegistry(regName, regURL, regToken string) error {
-	regConfig := apis.RegistryConfig{
+	regConfig := RegistryConfig{
 		Name: regName, URL: regURL, Token: regToken,
 	}
 	repos, err := ListRegistryConfig()
@@ -168,10 +174,7 @@ func addRegistry(regName, regURL, regToken string) error {
 	if !updated {
 		repos = append(repos, regConfig)
 	}
-	if err = StoreRepos(repos); err != nil {
-		return err
-	}
-	return nil
+	return StoreRepos(repos)
 }
 
 // removeRegistry will remove a registry from local
@@ -222,7 +225,7 @@ type GithubRegistry struct {
 }
 
 // NewRegistryFromConfig return Registry interface to get capabilities
-func NewRegistryFromConfig(config apis.RegistryConfig) (Registry, error) {
+func NewRegistryFromConfig(config RegistryConfig) (Registry, error) {
 	return NewRegistry(context.TODO(), config.Token, config.Name, config.URL)
 }
 
@@ -273,9 +276,8 @@ func NewRegistry(ctx context.Context, token, registryName string, regURL string)
 
 // ListRegistryConfig will get all registry config stored in local
 // this will return at least one config, which is DefaultRegistry
-func ListRegistryConfig() ([]apis.RegistryConfig, error) {
-
-	defaultRegistryConfig := apis.RegistryConfig{Name: DefaultRegistry, URL: "oss://registry.kubevela.net/"}
+func ListRegistryConfig() ([]RegistryConfig, error) {
+	defaultRegistryConfig := RegistryConfig{Name: DefaultRegistry, URL: "oss://registry.kubevela.net/"}
 	config, err := system.GetRepoConfig()
 	if err != nil {
 		return nil, err
@@ -283,7 +285,7 @@ func ListRegistryConfig() ([]apis.RegistryConfig, error) {
 	data, err := os.ReadFile(filepath.Clean(config))
 	if err != nil {
 		if os.IsNotExist(err) {
-			err := StoreRepos([]apis.RegistryConfig{defaultRegistryConfig})
+			err := StoreRepos([]RegistryConfig{defaultRegistryConfig})
 			if err != nil {
 				return nil, errors.Wrap(err, "error initialize default registry")
 			}
@@ -291,7 +293,7 @@ func ListRegistryConfig() ([]apis.RegistryConfig, error) {
 		}
 		return nil, err
 	}
-	var regConfigs []apis.RegistryConfig
+	var regConfigs []RegistryConfig
 	if err = yaml.Unmarshal(data, &regConfigs); err != nil {
 		return nil, err
 	}
@@ -582,11 +584,11 @@ func (l LocalRegistry) ListCaps() ([]types.Capability, error) {
 }
 
 func (item RegistryFile) toCapability() (types.Capability, error) {
-	dm, err := (&common.Args{}).GetDiscoveryMapper()
+	cli, err := (&common.Args{}).GetClient()
 	if err != nil {
 		return types.Capability{}, err
 	}
-	capability, err := ParseCapability(dm, item.data)
+	capability, err := ParseCapability(cli.RESTMapper(), item.data)
 	if err != nil {
 		return types.Capability{}, err
 	}
@@ -722,7 +724,7 @@ func Parse(addr string) (string, *Content, error) {
 }
 
 // StoreRepos will store registry repo locally
-func StoreRepos(registries []apis.RegistryConfig) error {
+func StoreRepos(registries []RegistryConfig) error {
 	config, err := system.GetRepoConfig()
 	if err != nil {
 		return err
@@ -736,11 +738,11 @@ func StoreRepos(registries []apis.RegistryConfig) error {
 }
 
 // ParseCapability will convert config from remote center to capability
-func ParseCapability(mapper discoverymapper.DiscoveryMapper, data []byte) (types.Capability, error) {
+func ParseCapability(mapper meta.RESTMapper, data []byte) (types.Capability, error) {
 	var obj = unstructured.Unstructured{Object: make(map[string]interface{})}
 	err := yaml.Unmarshal(data, &obj.Object)
 	if err != nil {
 		return types.Capability{}, err
 	}
-	return docgen.ParseCapabilityFromUnstructured(mapper, nil, obj)
+	return docgen.ParseCapabilityFromUnstructured(mapper, obj)
 }

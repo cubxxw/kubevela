@@ -13,6 +13,11 @@ spec:
     {{- include "kubevela-cluster-gateway.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9443"
+        prometheus.io/scrape: "true"
+        prometheus.io/scheme: "https"
       labels:
       {{- include "kubevela-cluster-gateway.selectorLabels" . | nindent 8 }}
     spec:
@@ -32,24 +37,32 @@ spec:
             - "--secure-port={{ .Values.multicluster.clusterGateway.port }}"
             - "--secret-namespace={{ .Release.Namespace }}"
             - "--feature-gates=APIPriorityAndFairness=false,ClientIdentityPenetration={{ .Values.authentication.enabled }}"
+            - "--cluster-gateway-proxy-config=/etc/proxy-config/config.yaml"
             {{- if .Values.multicluster.clusterGateway.secureTLS.enabled }}
             - "--tls-cert-file={{ .Values.multicluster.clusterGateway.secureTLS.certPath }}/tls.crt"
             - "--tls-private-key-file={{ .Values.multicluster.clusterGateway.secureTLS.certPath }}/tls.key"
             {{- end }}
+            - "--authorization-always-allow-paths=/healthz,/readyz,/livez,/metrics"
           image: {{ .Values.imageRegistry }}{{ .Values.multicluster.clusterGateway.image.repository }}:{{ .Values.multicluster.clusterGateway.image.tag }}
           imagePullPolicy: {{ .Values.multicluster.clusterGateway.image.pullPolicy }}
           resources:
           {{- toYaml .Values.multicluster.clusterGateway.resources | nindent 12 }}
           ports:
             - containerPort: {{ .Values.multicluster.clusterGateway.port }}
-          {{ if .Values.multicluster.clusterGateway.secureTLS.enabled }}
           volumeMounts:
+            - mountPath: /etc/proxy-config
+              name: proxy-config
+          {{ if .Values.multicluster.clusterGateway.secureTLS.enabled }}
             - mountPath: {{ .Values.multicluster.clusterGateway.secureTLS.certPath }}
               name: tls-cert-vol
               readOnly: true
           {{- end }}
-      {{ if .Values.multicluster.clusterGateway.secureTLS.enabled }}
       volumes:
+        - configMap:
+            defaultMode: 420
+            name: {{ .Release.Name }}-cluster-gateway-proxy-config
+          name: proxy-config
+      {{ if .Values.multicluster.clusterGateway.secureTLS.enabled }}
         - name: tls-cert-vol
           secret:
             defaultMode: 420
@@ -59,10 +72,19 @@ spec:
       nodeSelector:
       {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
       affinity:
-      {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{ if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{ else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "kubevela-cluster-gateway.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+              weight: 100
+      {{ end }}
       {{- with .Values.tolerations }}
       tolerations:
       {{- toYaml . | nindent 8 }}
@@ -72,6 +94,23 @@ spec:
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cluster-gateway-proxy-config
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    apiVersion: cluster.core.oam.dev/v1alpha1
+    kind: ClusterGatewayProxyConfiguration
+    spec:
+      clientIdentityExchanger:
+        rules:
+          - name: super-user
+            source:
+              group: kubevela:ux
+            type: PrivilegedIdentityExchanger
 ---
 apiVersion: v1
 kind: Service

@@ -27,17 +27,19 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-github/v32/github"
 	"github.com/imdario/mergo"
-	prismclusterv1alpha1 "github.com/kubevela/prism/pkg/apis/cluster/v1alpha1"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/pkg/errors"
 	"github.com/xanzy/go-gitlab"
+	"go.uber.org/multierr"
 	"golang.org/x/oauth2"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -54,18 +56,19 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	stringslices "k8s.io/utils/strings/slices"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	apiutils "github.com/oam-dev/kubevela/pkg/apiserver/utils"
 	"github.com/oam-dev/kubevela/pkg/config"
-	"github.com/oam-dev/kubevela/pkg/cue/script"
 	"github.com/oam-dev/kubevela/pkg/definition"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/schema"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	addonutil "github.com/oam-dev/kubevela/pkg/utils/addon"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
@@ -122,6 +125,9 @@ const (
 
 	// InstallerRuntimeOption inject install runtime info into addon options
 	InstallerRuntimeOption string = "installerRuntimeOption"
+
+	// CUEExtension with the expected extension for CUE files
+	CUEExtension = ".cue"
 )
 
 // ParameterFileName is the addon resources/parameter.cue file name
@@ -394,7 +400,7 @@ func readResFile(a *InstallPackage, reader AsyncReader, readPath string) error {
 	}
 	file := ElementFile{Data: b, Name: filepath.Base(readPath)}
 	switch filepath.Ext(filename) {
-	case ".cue":
+	case CUEExtension:
 		a.CUETemplates = append(a.CUETemplates, file)
 	case ".yaml", ".yml":
 		a.YAMLTemplates = append(a.YAMLTemplates, file)
@@ -423,7 +429,7 @@ func readDefFile(a *UIData, reader AsyncReader, readPath string) error {
 	filename := path.Base(readPath)
 	file := ElementFile{Data: b, Name: filepath.Base(readPath)}
 	switch filepath.Ext(filename) {
-	case ".cue":
+	case CUEExtension:
 		a.CUEDefinitions = append(a.CUEDefinitions, file)
 	case ".yaml", ".yml":
 		a.Definitions = append(a.Definitions, file)
@@ -440,7 +446,7 @@ func readConfigTemplateFile(a *UIData, reader AsyncReader, readPath string) erro
 		return err
 	}
 	filename := path.Base(readPath)
-	if filepath.Ext(filename) != ".cue" {
+	if filepath.Ext(filename) != CUEExtension {
 		return nil
 	}
 	file := ElementFile{Data: b, Name: filepath.Base(readPath)}
@@ -456,7 +462,7 @@ func readViewFile(a *InstallPackage, reader AsyncReader, readPath string) error 
 	}
 	filename := path.Base(readPath)
 	switch filepath.Ext(filename) {
-	case ".cue":
+	case CUEExtension:
 		a.CUEViews = append(a.CUEViews, ElementFile{Data: b, Name: filepath.Base(readPath)})
 	case ".yaml", ".yml":
 		a.YAMLViews = append(a.YAMLViews, ElementFile{Data: b, Name: filepath.Base(readPath)})
@@ -580,16 +586,15 @@ func unmarshalToContent(content []byte) (fileContent *github.RepositoryContent, 
 	if directoryUnmarshalError == nil {
 		return nil, directoryContent, nil
 	}
-	return nil, nil, fmt.Errorf("unmarshalling failed for both file and directory content: %s and %w", fileUnmarshalError, directoryUnmarshalError)
+	return nil, nil, fmt.Errorf("unmarshalling failed for both file and directory content: %s and %w", fileUnmarshalError.Error(), directoryUnmarshalError)
 }
 
 func genAddonAPISchema(addonRes *UIData) error {
-	cueScript := script.CUE(addonRes.Parameters)
-	schema, err := cueScript.ParsePropertiesToSchema()
+	s, err := schema.ParsePropertiesToSchema(context.Background(), addonRes.Parameters)
 	if err != nil {
 		return err
 	}
-	addonRes.APISchema = schema
+	addonRes.APISchema = s
 	return nil
 }
 
@@ -599,10 +604,20 @@ func getClusters(args map[string]interface{}) []string {
 		return nil
 	}
 	cc, ok := ccr.([]string)
+	if ok {
+		return cc
+	}
+	ccrslice, ok := ccr.([]interface{})
 	if !ok {
 		return nil
 	}
-	return cc
+	var ccstring []string
+	for _, c := range ccrslice {
+		if cstring, ok := c.(string); ok {
+			ccstring = append(ccstring, cstring)
+		}
+	}
+	return ccstring
 }
 
 // renderNeededNamespaceAsComps will convert namespace as app components to create namespace for managed clusters
@@ -630,12 +645,12 @@ func checkDeployClusters(ctx context.Context, k8sClient client.Client, args map[
 		return nil, nil
 	}
 
-	clusters, err := prismclusterv1alpha1.NewClusterClient(k8sClient).List(ctx)
+	clusters, err := multicluster.NewClusterClient(k8sClient).List(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "fail to get registered cluster")
 	}
 
-	clusterNames := sets.String{}
+	clusterNames := sets.Set[string]{}
 	if len(clusters.Items) != 0 {
 		for _, cluster := range clusters.Items {
 			clusterNames.Insert(cluster.Name)
@@ -685,12 +700,12 @@ func RenderDefinitions(addon *InstallPackage, config *rest.Config) ([]*unstructu
 }
 
 // RenderConfigTemplates render the config template
-func RenderConfigTemplates(addon *InstallPackage, cli client.Client) ([]*unstructured.Unstructured, error) {
+func RenderConfigTemplates(ctx context.Context, addon *InstallPackage, cli client.Client) ([]*unstructured.Unstructured, error) {
 	templates := make([]*unstructured.Unstructured, 0)
 
 	factory := config.NewConfigFactory(cli)
 	for _, templateFile := range addon.ConfigTemplates {
-		t, err := factory.ParseTemplate("", []byte(templateFile.Data))
+		t, err := factory.ParseTemplate(ctx, "", []byte(templateFile.Data))
 		if err != nil {
 			return nil, err
 		}
@@ -723,7 +738,7 @@ func RenderDefinitionSchema(addon *InstallPackage) ([]*unstructured.Unstructured
 }
 
 // RenderViews will render views in addons.
-func RenderViews(addon *InstallPackage) ([]*unstructured.Unstructured, error) {
+func RenderViews(ctx context.Context, addon *InstallPackage) ([]*unstructured.Unstructured, error) {
 	views := make([]*unstructured.Unstructured, 0)
 	for _, view := range addon.YAMLViews {
 		obj, err := renderObject(view)
@@ -733,7 +748,7 @@ func RenderViews(addon *InstallPackage) ([]*unstructured.Unstructured, error) {
 		views = append(views, obj)
 	}
 	for _, view := range addon.CUEViews {
-		obj, err := renderCUEView(view)
+		obj, err := renderCUEView(ctx, view)
 		if err != nil {
 			return nil, errors.Wrapf(err, "render velaQL view file %s", view.Name)
 		}
@@ -796,13 +811,13 @@ func renderSchemaConfigmap(elem ElementFile) (*unstructured.Unstructured, error)
 	return util.Object2Unstructured(cm)
 }
 
-func renderCUEView(elem ElementFile) (*unstructured.Unstructured, error) {
+func renderCUEView(ctx context.Context, elem ElementFile) (*unstructured.Unstructured, error) {
 	name, err := utils.GetFilenameFromLocalOrRemote(elem.Name)
 	if err != nil {
 		return nil, err
 	}
 
-	cm, err := velaql.ParseViewIntoConfigMap(elem.Data, name)
+	cm, err := velaql.ParseViewIntoConfigMap(ctx, elem.Data, name)
 	if err != nil {
 		return nil, err
 	}
@@ -832,6 +847,18 @@ func RenderArgsSecret(addon *InstallPackage, args map[string]interface{}) *unstr
 		return nil
 	}
 	return u
+}
+
+// deleteArgsSecret delete the addon's args secret file
+func deleteArgsSecret(ctx context.Context, k8sClient client.Client, addonName string) error {
+	var sec v1.Secret
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: types.DefaultKubeVelaNS, Name: addonutil.Addon2SecName(addonName)}, &sec); err == nil {
+		// Handle successful get operation
+		return k8sClient.Delete(ctx, &sec)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // FetchArgsFromSecret fetch addon args from secrets
@@ -908,10 +935,9 @@ func NewAddonInstaller(ctx context.Context, cli client.Client, discoveryClient *
 	return i
 }
 
-func (h *Installer) enableAddon(addon *InstallPackage) (string, error) {
+func (h *Installer) enableAddon(ctx context.Context, addon *InstallPackage) (string, error) {
 	var err error
 	h.addon = addon
-
 	if !h.skipVersionValidate {
 		err = checkAddonVersionMeetRequired(h.ctx, addon.SystemRequirements, h.cli, h.dc)
 		if err != nil {
@@ -920,10 +946,10 @@ func (h *Installer) enableAddon(addon *InstallPackage) (string, error) {
 		}
 	}
 
-	if err = h.installDependency(addon); err != nil {
+	if err = h.installDependency(ctx, addon); err != nil {
 		return "", err
 	}
-	if err = h.dispatchAddonResource(addon); err != nil {
+	if err = h.dispatchAddonResource(ctx, addon); err != nil {
 		return "", err
 	}
 	// we shouldn't put continue func into dispatchAddonResource, because the re-apply app maybe already update app and
@@ -989,27 +1015,61 @@ func (h *Installer) getAddonMeta() (map[string]SourceMeta, error) {
 }
 
 // installDependency checks if addon's dependency and install it
-func (h *Installer) installDependency(addon *InstallPackage) error {
+func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage) error {
+	installedAddons, err := listInstalledAddons(h.ctx, h.cli)
+	if err != nil {
+		return err
+	}
+
+	var registries []ItemInfoLister
+	registries = append(registries, h.r)
+	for _, registry := range h.registries {
+		r := registry
+		registries = append(registries, &r)
+	}
+	availableAddons, err := listAvailableAddons(registries)
+	if err != nil {
+		return err
+	}
+
+	err = validateAddonDependencies(addon, installedAddons, availableAddons)
+	if err != nil {
+		return err
+	}
+
 	var dependencies []string
+	var addonClusters = getClusters(h.args)
 	for _, dep := range addon.Dependencies {
-		_, err := FetchAddonRelatedApp(h.ctx, h.cli, dep.Name)
-		if err == nil {
-			continue
-		}
-		if !apierrors.IsNotFound(err) {
+		needInstallAddonDep, err := checkDependencyNeedInstall(h.ctx, h.cli, dep.Name, addonClusters)
+		if err != nil {
 			return err
 		}
+		if !needInstallAddonDep {
+			continue
+		}
+
 		dependencies = append(dependencies, dep.Name)
 		if h.dryRun {
 			continue
 		}
 		depHandler := *h
-		depHandler.args = nil
+		// reset dependency addon clusters parameter
+		depArgs, depArgsErr := getDependencyArgs(h.ctx, h.cli, dep.Name, addonClusters)
+		if depArgsErr != nil {
+			return depArgsErr
+		}
+
+		depHandler.args = depArgs
+
 		var depAddon *InstallPackage
+		depVersion, err := calculateDependencyVersionToInstall(*dep, installedAddons, availableAddons)
+		if err != nil {
+			return err
+		}
 		// try to install the dependent addon from the same registry with the current addon
-		depAddon, err = h.loadInstallPackage(dep.Name, dep.Version)
+		depAddon, err = h.loadInstallPackage(dep.Name, depVersion)
 		if err == nil {
-			additionalInfo, err := depHandler.enableAddon(depAddon)
+			additionalInfo, err := depHandler.enableAddon(ctx, depAddon)
 			if err != nil {
 				return errors.Wrap(err, "fail to dispatch dependent addon resource")
 			}
@@ -1026,7 +1086,7 @@ func (h *Installer) installDependency(addon *InstallPackage) error {
 			depHandler.r = &Registry{
 				Name: registry.Name, Helm: registry.Helm, OSS: registry.OSS, Git: registry.Git, Gitee: registry.Gitee, Gitlab: registry.Gitlab,
 			}
-			depAddon, err = depHandler.loadInstallPackage(dep.Name, dep.Version)
+			depAddon, err = depHandler.loadInstallPackage(dep.Name, depVersion)
 			if err == nil {
 				break
 			}
@@ -1036,7 +1096,7 @@ func (h *Installer) installDependency(addon *InstallPackage) error {
 			return err
 		}
 		if err == nil {
-			additionalInfo, err := depHandler.enableAddon(depAddon)
+			additionalInfo, err := depHandler.enableAddon(ctx, depAddon)
 			if err != nil {
 				return errors.Wrap(err, "fail to dispatch dependent addon resource")
 			}
@@ -1045,13 +1105,346 @@ func (h *Installer) installDependency(addon *InstallPackage) error {
 			}
 			return nil
 		}
-		return fmt.Errorf("dependency addon: %s with version: %s cannot be found from all registries", dep.Name, dep.Version)
+		return fmt.Errorf("dependency addon: %s with version: %s cannot be found from all registries", dep.Name, depVersion)
 	}
 	if h.dryRun && len(dependencies) > 0 {
 		klog.Warningf("dry run addon won't install dependencies, please make sure your system has already installed these addons: %v", strings.Join(dependencies, ", "))
 		return nil
 	}
 	return nil
+}
+
+// validateAddonDependencies checks if addon's dependencies can be satisfied.
+// If dependency is installed, check if the version matches required version.
+// If dependency is not installed, check available addons for dependency
+// matching the required version.
+// Return error if any dependency cannot be satisfied.
+func validateAddonDependencies(addon *InstallPackage, installedAddons itemInfoMap, availableAddons itemInfoMap) error {
+	var merr error
+	for _, dep := range addon.Dependencies {
+		_, err := calculateDependencyVersionToInstall(*dep, installedAddons, availableAddons)
+		if err != nil {
+			merr = multierr.Append(merr, fmt.Errorf("addon %s has unresolvable dependency %s: %w", addon.Name, dep.Name, err))
+		}
+	}
+	return merr
+}
+
+// calculateDependencyVersionToInstall compares an addon's dependency to a list
+// of installed and available addons and returns a version to install.
+// If dependency is installed, return the installed version if it matches the
+// required version.
+// If dependency is not installed, return the latest available version that
+// satisfies the dependency version.
+// Return error if dependency version cannot be satisfied.
+func calculateDependencyVersionToInstall(dependency Dependency, installedAddons itemInfoMap, availableAddons itemInfoMap) (string, error) {
+	if dependency.Name == "" {
+		return "", fmt.Errorf("dependency name cannot be empty")
+	}
+
+	// if dependency is installed, return the installed version if it matches
+	// the required version
+	if installedAddons != nil {
+		installedAddon, ok := installedAddons[dependency.Name]
+		if ok {
+			// versions length must be 1
+			if len(installedAddon.AvailableVersions) != 1 {
+				return "", errors.New("installedAddon.Versions length must be 1")
+			}
+			installedVersion := installedAddon.AvailableVersions[0]
+
+			if dependency.Version == "" {
+				return installedVersion, nil
+			}
+
+			match, _ := checkSemVer(installedVersion, dependency.Version)
+			if match {
+				return installedVersion, nil
+			}
+
+			return "", fmt.Errorf("addon %s version '%s' does not match installed version '%s'",
+				dependency.Name, dependency.Version, installedVersion)
+		}
+	}
+
+	availableAddon, ok := availableAddons[dependency.Name]
+	if !ok {
+		return "", fmt.Errorf("no available addon with name %s", dependency.Name)
+	}
+
+	sortedVersions := sortVersionsDescending(availableAddon.AvailableVersions)
+
+	// if no version is specified, return the latest version
+	if dependency.Version == "" {
+		return sortedVersions[0], nil
+	}
+
+	// check if the dependency version is satisfied
+	var match bool
+	for _, version := range sortedVersions {
+		match, _ = checkSemVer(version, dependency.Version)
+		if match {
+			return version, nil
+		}
+	}
+
+	// no available version satisfies the dependency version
+	return "", fmt.Errorf("no available addon with name %s and version '%s', available versions %s",
+		dependency.Name, dependency.Version, availableAddon.AvailableVersions)
+}
+
+func sortVersionsDescending(versions []string) []string {
+	var sortedVersions []*semver.Version
+	var sortedVersionStrings []string
+	for _, v := range versions {
+		var err error
+		// Note: NewVersion attempts to convert SemVer-ish formats into SemVer
+		parsedVersion, err := semver.NewVersion(v)
+		if err == nil {
+			sortedVersions = append(sortedVersions, parsedVersion)
+		}
+	}
+	// sort versions in descending order
+	sort.Sort(sort.Reverse(semver.Collection(sortedVersions)))
+	for _, v := range sortedVersions {
+		sortedVersionStrings = append(sortedVersionStrings, v.String())
+	}
+	return sortedVersionStrings
+}
+
+// ItemInfoLister is an interface for Registry.ListAddonInfo() to enable easier
+// testing with mocks.
+type ItemInfoLister interface {
+	ListAddonInfo() (map[string]ItemInfo, error)
+}
+
+// listAvailableAddons fetches a collection of addons available in a list of
+// registries. Returns a map of ItemInfo grouped by addon name.
+func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
+	availableAddons := make(itemInfoMap)
+
+	for _, registry := range registries {
+		addons, err := registry.ListAddonInfo()
+		if err != nil {
+			return nil, err
+		}
+		availableAddons = mergeAddonInfoMaps(availableAddons, addons)
+	}
+	return availableAddons, nil
+}
+
+func mergeAddonInfoMaps(existingAddons itemInfoMap, newAddons itemInfoMap) itemInfoMap {
+	mergedAddons := existingAddons
+	for _, newAddon := range newAddons {
+		if existingAddon, ok := existingAddons[newAddon.Name]; ok {
+			// merge addon versions
+			existingVersions := existingAddon.AvailableVersions
+			newVersions := newAddon.AvailableVersions
+
+			mergedVersionsSet := make(map[string]bool)
+
+			for _, item := range existingVersions {
+				mergedVersionsSet[item] = true
+			}
+			for _, item := range newVersions {
+				mergedVersionsSet[item] = true
+			}
+
+			mergedVersions := make([]string, 0, len(mergedVersionsSet))
+			for item := range mergedVersionsSet {
+				mergedVersions = append(mergedVersions, item)
+			}
+
+			mergedVersions = sortVersionsDescending(mergedVersions)
+
+			existingAddon.AvailableVersions = mergedVersions
+			mergedAddons[existingAddon.Name] = existingAddon
+		} else {
+			mergedAddons[newAddon.Name] = newAddon
+		}
+	}
+	return mergedAddons
+}
+
+// listInstalledAddons fetches a collection of addons installed in the cluster.
+// Returns a map of ItemInfo grouped by addon name.
+func listInstalledAddons(ctx context.Context, k8sClient client.Client) (itemInfoMap, error) {
+	installedAddons := make(itemInfoMap)
+	// get all addons from cluster
+	// for each addon, get the version and add it to addonVersions
+	appList := &v1beta1.ApplicationList{}
+	err := k8sClient.List(ctx, appList, client.InNamespace(types.DefaultKubeVelaNS), client.HasLabels{oam.LabelAddonName, oam.LabelAddonVersion})
+	if err != nil {
+		return nil, err
+	}
+	for _, app := range appList.Items {
+		addonName := app.Labels[oam.LabelAddonName]
+		addonVersion := app.Labels[oam.LabelAddonVersion]
+		if addonName == "" || addonVersion == "" {
+			continue
+		}
+		installedAddons[addonName] = ItemInfo{
+			Name:              addonName,
+			AvailableVersions: []string{addonVersion},
+		}
+	}
+	return installedAddons, nil
+}
+
+// checkDependencyNeedInstall checks whether dependency addon needs to be reinstalled
+// If the dep addon is not installed, need to install
+// If the dep addon is installed locally, don't need to install
+// If the dep addon is installed from registry and not defined clusters, don't need to install
+// If the dep addon is installed from registry and is defined clusters, and clusters value is nil, don't need to install
+// If the dep addon is installed from registry and is defined clusters, and clusters value is not nil,
+// and the upstream addon's clusters is nil, need to install
+// If the dep addon is installed from registry and is defined clusters, and clusters value is not nil,
+// and the upstream addon's clusters is not nil, the re-installation is based on whether the dep clusters value can contain the upstream clusters value
+func checkDependencyNeedInstall(ctx context.Context, k8sClient client.Client, depName string, addonClusters []string) (bool, error) {
+	depApp, err := FetchAddonRelatedApp(ctx, k8sClient, depName)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		// dependent addon is not exist, need to install it
+		return true, nil
+	}
+
+	// We should not automatically override addons installed locally by the user, so skip to reinstall it
+	labels := depApp.GetLabels()
+	installedRegistry := labels[oam.LabelAddonRegistry]
+	isLocalRegistry := installedRegistry == LocalAddonRegistryName
+	if isLocalRegistry {
+		klog.Warningf("%v is installed locally. Please ensure that it has been installed to the required clusters, if not, please manually install it.", depName)
+		return false, nil
+	}
+
+	// Addons without the clusters parameter can only be installed on the local cluster. So we don't need to reinstall it
+	hasClustersArg, hasClustersArgsErr := hasClustersParameters(ctx, k8sClient, depName)
+	if hasClustersArgsErr != nil {
+		return false, hasClustersArgsErr
+	}
+	if !hasClustersArg {
+		return false, nil
+	}
+
+	// get addon current parameter value
+	depArgs, depArgsErr := GetAddonLegacyParameters(ctx, k8sClient, depName)
+	if depArgsErr != nil && !apierrors.IsNotFound(depArgsErr) {
+		return false, depArgsErr
+	}
+	clusterArgValue := depArgs[types.ClustersArg]
+
+	// nil clusters indicates that the dependent addon is installed on all clusters
+	if clusterArgValue == nil {
+		return false, nil
+	}
+
+	// nil addonClusters indicates the addon will be installed all clusters, thus the dependent addon should also to be installed on all clusters.
+	if addonClusters == nil {
+		return true, nil
+	}
+
+	// Determine whether the dependent addon's existing clusters can cover the new addon's clusters
+	needInstallAddonDep, _ := hasNotCoveredClusters(clusterArgValue, addonClusters)
+	return needInstallAddonDep, nil
+}
+
+// getDependencyArgs get the dependent addon's install args according to the upstream addon's clusters parameter's value
+// If dep addon has not defined clusters parameter, don't need to set clusters parameter value,
+// If dep addon has not installed, set the clusters value same to addon's clusters
+// If dep addon clusters parameter's value is nil, the dependent addon is installed on all clusters,
+// don't need to reset clusters parameter value
+// If dep addon has defined clusters parameter, and clusters is not nil, and addon clusters is nil,
+// set clusters value as nil
+// If dep addon has defined clusters parameter, and clusters is not nil, and addon clusters is not nil,
+// set clusters value as the union of the dependent addon's and the upstream addon's clusters
+func getDependencyArgs(ctx context.Context, k8sClient client.Client, depName string, addonClusters []string) (map[string]interface{}, error) {
+	hasClustersArg, err := hasClustersParameters(ctx, k8sClient, depName)
+	if err != nil {
+		return nil, err
+	}
+	// dep addon is not install, installed it by assigning clusters value
+	_, depErr := FetchAddonRelatedApp(ctx, k8sClient, depName)
+	if depErr != nil {
+		if !apierrors.IsNotFound(depErr) {
+			return nil, err
+		}
+		depArgs := map[string]interface{}{}
+		if addonClusters != nil {
+			depArgs = map[string]interface{}{
+				types.ClustersArg: addonClusters,
+			}
+		}
+		return depArgs, nil
+	}
+
+	// dep addon is installed
+	depArgs, depArgsErr := GetAddonLegacyParameters(ctx, k8sClient, depName)
+	if depArgsErr != nil && !apierrors.IsNotFound(depArgsErr) {
+		return nil, depArgsErr
+	}
+	if !hasClustersArg || depArgs[types.ClustersArg] == nil {
+		return depArgs, nil
+	}
+	if addonClusters == nil {
+		delete(depArgs, types.ClustersArg)
+	} else {
+		clusterArgValue := depArgs[types.ClustersArg]
+		notCovered, depClusters := hasNotCoveredClusters(clusterArgValue, addonClusters)
+		if notCovered {
+			depArgs[types.ClustersArg] = depClusters
+		}
+	}
+	return depArgs, nil
+}
+
+// hasClustersParameters checks whether the addon defines the clusters parameter.
+// If the addon has been installed, get addon package from the installed registry,
+// Otherwise, get addon package from one of registries where this addon exists.
+func hasClustersParameters(ctx context.Context, k8sClient client.Client, addonName string) (bool, error) {
+	var installedRegistry []string
+	depApp, err := FetchAddonRelatedApp(ctx, k8sClient, addonName)
+	if err == nil {
+		labels := depApp.GetLabels()
+		registryName, ok := labels[oam.LabelAddonRegistry]
+		if ok {
+			installedRegistry = []string{registryName}
+		}
+	}
+	addonPackages, err := FindAddonPackagesDetailFromRegistry(context.Background(), k8sClient, []string{addonName}, installedRegistry)
+	// If the state of addon is not disabled, we don't check the error, because it could be installed from local.
+	if err != nil {
+		return false, err
+	}
+	var addonPackage *WholeAddonPackage
+	if len(addonPackages) != 0 {
+		addonPackage = addonPackages[0]
+	}
+	if addonPackage.APISchema == nil {
+		return false, nil
+	}
+	schemas := addonPackage.APISchema.Properties
+	_, hasClusters := schemas[types.ClustersArg]
+	return hasClusters, nil
+}
+
+// hasNotCoveredClusters check if the clusterArgsValue can cover the values of addonClusters,
+// and if not covered, also return the merged clusters array
+func hasNotCoveredClusters(clusterArgValue interface{}, addonClusters []string) (bool, []string) {
+	var needInstallAddonDep = false
+	var depClusters []string
+	originClusters := clusterArgValue.([]interface{})
+	for _, r := range originClusters {
+		depClusters = append(depClusters, r.(string))
+	}
+	for _, addonCluster := range addonClusters {
+		if !stringslices.Contains(depClusters, addonCluster) {
+			depClusters = append(depClusters, addonCluster)
+			needInstallAddonDep = true
+		}
+	}
+	return needInstallAddonDep, depClusters
 }
 
 // checkDependency checks if addon's dependency
@@ -1076,6 +1469,8 @@ func (h *Installer) checkDependency(addon *InstallPackage) ([]string, error) {
 
 // createOrUpdate will return true if updated
 func (h *Installer) createOrUpdate(app *v1beta1.Application) (bool, error) {
+	// Set the publish version for the addon application
+	oam.SetPublishVersion(app, util.GenerateVersion("addon"))
 	var existApp v1beta1.Application
 	err := h.cli.Get(h.ctx, client.ObjectKey{Name: app.Name, Namespace: app.Namespace}, &existApp)
 	if apierrors.IsNotFound(err) {
@@ -1087,8 +1482,6 @@ func (h *Installer) createOrUpdate(app *v1beta1.Application) (bool, error) {
 	existApp.Spec = app.Spec
 	existApp.Labels = app.Labels
 	existApp.Annotations = app.Annotations
-	// Set the publish version for the addon application
-	oam.SetPublishVersion(&existApp, apiutils.GenerateVersion("addon"))
 	err = h.cli.Update(h.ctx, &existApp)
 	if err != nil {
 		klog.Errorf("fail to create application: %v", err)
@@ -1098,7 +1491,7 @@ func (h *Installer) createOrUpdate(app *v1beta1.Application) (bool, error) {
 	return true, nil
 }
 
-func (h *Installer) dispatchAddonResource(addon *InstallPackage) error {
+func (h *Installer) dispatchAddonResource(ctx context.Context, addon *InstallPackage) error {
 	app, auxiliaryOutputs, err := RenderApp(h.ctx, addon, h.cli, h.args)
 	if err != nil {
 		return errors.Wrap(err, "render addon application fail")
@@ -1128,7 +1521,7 @@ func (h *Installer) dispatchAddonResource(addon *InstallPackage) error {
 	}
 
 	// Step2: Render the config templates
-	templates, err := RenderConfigTemplates(addon, h.cli)
+	templates, err := RenderConfigTemplates(ctx, addon, h.cli)
 	if err != nil {
 		return errors.Wrap(err, "render the config template fail")
 	}
@@ -1140,7 +1533,7 @@ func (h *Installer) dispatchAddonResource(addon *InstallPackage) error {
 	}
 
 	// Step4: Render the velaQL views
-	views, err := RenderViews(addon)
+	views, err := RenderViews(ctx, addon)
 	if err != nil {
 		return errors.Wrap(err, "render addon views fail")
 	}
@@ -1199,18 +1592,27 @@ func (h *Installer) dispatchAddonResource(addon *InstallPackage) error {
 		return nil
 	}
 
-	if h.args != nil && len(h.args) > 0 {
+	if len(h.args) > 0 {
 		sec := RenderArgsSecret(addon, h.args)
 		addOwner(sec, app)
 		err = h.apply.Apply(h.ctx, sec, apply.DisableUpdateAnnotation())
 		if err != nil {
 			return err
 		}
+	} else {
+		// delete addon args secret file
+		deleteErr := deleteArgsSecret(h.ctx, h.cli, addon.Name)
+		if deleteErr != nil {
+			return deleteErr
+		}
 	}
 	return nil
 }
 
 func (h *Installer) renderNotes(addon *InstallPackage) (string, error) {
+	if len(addon.Notes.Data) == 0 {
+		return "", nil
+	}
 	r := addonCueTemplateRender{
 		addon:     addon,
 		inputArgs: h.args,
@@ -1223,15 +1625,15 @@ func (h *Installer) renderNotes(addon *InstallPackage) (string, error) {
 		return "", err
 	}
 	notesFile := contextFile + "\n" + addon.Notes.Data
-	val, err := value.NewValue(notesFile, nil, "")
-	if err != nil {
+	val := cuecontext.New().CompileString(notesFile)
+	if val.Err() != nil {
 		return "", errors.Wrap(err, "build values for NOTES.cue")
 	}
-	notes, err := val.LookupValue(KeyWordNotes)
-	if err != nil {
-		return "", errors.Wrap(err, "look up notes in NOTES.cue")
+	notes := val.LookupPath(cue.ParsePath(KeyWordNotes))
+	if !notes.Exists() {
+		return "", errors.New("notes not found")
 	}
-	notesStr, err := notes.CueValue().String()
+	notesStr, err := notes.String()
 	if err != nil {
 		return "", errors.Wrap(err, "convert notes to string")
 	}

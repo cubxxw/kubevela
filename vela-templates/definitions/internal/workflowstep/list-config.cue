@@ -1,27 +1,23 @@
 import (
-	"vela/op"
+	"vela/config"
 )
 
 "list-config": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "Config Management"
+	}
 	labels: {}
 	description: "List the configs"
 }
 template: {
-	output: op.#ListConfig & {
-		if parameter.namespace != _|_ {
-			namespace: parameter.namespace
-		}
-		if parameter.namespace == _|_ {
-			namespace: context.namespace
-		}
-		template: parameter.template
+	output: config.#ListConfig & {
+		$params: parameter
 	}
 	parameter: {
 		//+usage=Specify the template of the config.
 		template: string
 		//+usage=Specify the namespace of the config.
-		namespace?: string
+		namespace: *context.namespace | string
 	}
 }

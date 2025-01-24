@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kubevela/workflow/pkg/cue/packages"
 	"github.com/pkg/errors"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -32,7 +31,6 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/cue"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
@@ -45,7 +43,6 @@ type MarkdownReference struct {
 	AllInOne        bool
 	ForceExample    bool
 	CustomDocHeader string
-	DiscoveryMapper discoverymapper.DiscoveryMapper
 	ParseReference
 }
 
@@ -55,25 +52,11 @@ func (ref *MarkdownReference) GenerateReferenceDocs(ctx context.Context, c commo
 	if err != nil {
 		return err
 	}
-	var pd *packages.PackageDiscover
-	if ref.Remote != nil {
-		pd = ref.Remote.PD
-	}
-	if pd == nil {
-		pd = func() *packages.PackageDiscover {
-			rpd, err := c.GetPackageDiscover()
-			if err != nil {
-				klog.Error("fail to build package discover", err)
-				return nil
-			}
-			return rpd
-		}()
-	}
-	return ref.CreateMarkdown(ctx, caps, baseRefPath, false, pd)
+	return ref.CreateMarkdown(ctx, caps, baseRefPath, false)
 }
 
 // CreateMarkdown creates markdown based on capabilities
-func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.Capability, baseRefPath string, catalog bool, pd *packages.PackageDiscover) error {
+func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.Capability, baseRefPath string, catalog bool) error {
 
 	sort.Slice(caps, func(i, j int) bool {
 		return caps[i].Name < caps[j].Name
@@ -85,7 +68,7 @@ func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.C
 		if ref.Filter != nil && !ref.Filter(c) {
 			continue
 		}
-		capDoc, err := ref.GenerateMarkdownForCap(ctx, c, pd, ref.AllInOne)
+		capDoc, err := ref.GenerateMarkdownForCap(ctx, c, ref.AllInOne)
 		if err != nil {
 			return err
 		}
@@ -140,7 +123,8 @@ func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.C
 }
 
 // GenerateMarkdownForCap will generate markdown for one capability
-func (ref *MarkdownReference) GenerateMarkdownForCap(ctx context.Context, c types.Capability, pd *packages.PackageDiscover, containSuffix bool) (string, error) {
+// nolint:gocyclo
+func (ref *MarkdownReference) GenerateMarkdownForCap(_ context.Context, c types.Capability, containSuffix bool) (string, error) {
 	var (
 		description   string
 		base          string
@@ -161,7 +145,7 @@ func (ref *MarkdownReference) GenerateMarkdownForCap(ctx context.Context, c type
 	capNameInTitle := ref.makeReadableTitle(capName)
 	switch c.Category {
 	case types.CUECategory:
-		cueValue, err := common.GetCUEParameterValue(c.CueTemplate, pd)
+		cueValue, err := common.GetCUEParameterValue(c.CueTemplate)
 		if err != nil && !errors.Is(err, cue.ErrParameterNotExist) {
 			return "", fmt.Errorf("failed to retrieve `parameters` value from %s with err: %w", c.Name, err)
 		}
@@ -172,18 +156,10 @@ func (ref *MarkdownReference) GenerateMarkdownForCap(ctx context.Context, c type
 		}
 		if c.Type == types.TypeComponentDefinition {
 			var warnErr error
-			baseDoc, warnErr = GetBaseResourceKinds(c.CueTemplate, pd, ref.DiscoveryMapper)
+			baseDoc, warnErr = GetBaseResourceKinds(c.CueTemplate, ref.Client.RESTMapper())
 			if warnErr != nil {
 				klog.Warningf("failed to get base resource kinds for %s: %v", c.Name, warnErr)
 			}
-		}
-	case types.HelmCategory, types.KubeCategory:
-		properties, _, err := ref.GenerateHelmAndKubeProperties(ctx, &c)
-		if err != nil {
-			return "", fmt.Errorf("failed to retrieve `parameters` value from %s with err: %w", c.Name, err)
-		}
-		for _, property := range properties {
-			generatedDoc += ref.getParameterString("###"+property.Name, property.Parameters, types.HelmCategory)
 		}
 	case types.TerraformCategory:
 		generatedDoc, err = ref.GenerateTerraformCapabilityPropertiesAndOutputs(c)
@@ -227,6 +203,20 @@ func (ref *MarkdownReference) GenerateMarkdownForCap(ctx context.Context, c type
 	description = fmt.Sprintf("\n\n%s %s\n\n%s", sharp, lang.Get(Description), strings.TrimSpace(lang.Get(descriptionI18N)))
 	if !strings.HasSuffix(description, lang.Get(".")) {
 		description += lang.Get(".")
+	}
+
+	if c.Type == types.TypeWorkflowStep {
+		var scopeI18N string
+		switch c.Labels["custom.definition.oam.dev/scope"] {
+		case "":
+			scopeI18N = "This step type is valid in both Application and WorkflowRun"
+		case "Application":
+			scopeI18N = "This step type is only valid in Application"
+		case "WorkflowRun":
+			scopeI18N = "This step type is only valid in WorkflowRun"
+		}
+		scope := fmt.Sprintf("\n\n%s %s\n\n%s%s", sharp, lang.Get(Scope), strings.TrimSpace(lang.Get(scopeI18N)), lang.Get("."))
+		description += scope
 	}
 
 	if c.Type == types.TypeTrait {
@@ -305,16 +295,6 @@ func (ref *MarkdownReference) getParameterString(tableName string, parameterList
 				printableDefaultValue := ref.getCUEPrintableDefaultValue(p.Default)
 				tab += fmt.Sprintf(" %s | %s | %s | %t | %s \n", p.Name, ref.prettySentence(p.Usage), ref.formatTableString(p.PrintableType), p.Required, printableDefaultValue)
 			}
-		}
-	case types.HelmCategory:
-		for _, p := range parameterList {
-			printableDefaultValue := ref.getJSONPrintableDefaultValue(p.JSONType, p.Default)
-			tab += fmt.Sprintf(" %s | %s | %s | %t | %s \n", p.Name, ref.prettySentence(p.Usage), ref.formatTableString(p.PrintableType), p.Required, printableDefaultValue)
-		}
-	case types.KubeCategory:
-		for _, p := range parameterList {
-			// Kube parameter doesn't have default value
-			tab += fmt.Sprintf(" %s | %s | %s | %t | %s \n", p.Name, ref.prettySentence(p.Usage), ref.formatTableString(p.PrintableType), p.Required, "")
 		}
 	case types.TerraformCategory:
 		// Terraform doesn't have default value

@@ -1,28 +1,24 @@
 import (
-	"vela/op"
+	"vela/config"
 )
 
 "read-config": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "Config Management"
+	}
 	labels: {}
 	description: "Read a config"
 }
 template: {
-	output: op.#ReadConfig & {
-		name: parameter.name
-		if parameter.namespace != _|_ {
-			namespace: parameter.namespace
-		}
-		if parameter.namespace == _|_ {
-			namespace: context.namespace
-		}
+	output: config.#ReadConfig & {
+		$params: parameter
 	}
 	parameter: {
 		//+usage=Specify the name of the config.
 		name: string
 
 		//+usage=Specify the namespace of the config.
-		namespace?: string
+		namespace: *context.namespace | string
 	}
 }

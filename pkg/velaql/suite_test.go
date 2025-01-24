@@ -22,19 +22,18 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	cuexv1alpha1 "github.com/kubevela/pkg/apis/cue/v1alpha1"
+	"github.com/kubevela/pkg/util/singleton"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	"github.com/kubevela/workflow/pkg/cue/packages"
-
-	"github.com/oam-dev/kubevela/pkg/apiserver/infrastructure/clients"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
@@ -46,15 +45,17 @@ var pod corev1.Pod
 var readView corev1.ConfigMap
 var applyView corev1.ConfigMap
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	rand.Seed(time.Now().UnixNano())
 	By("bootstrapping test environment")
 
 	testEnv = &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute * 3,
 		ControlPlaneStopTimeout:  time.Minute,
-		UseExistingCluster:       pointer.BoolPtr(false),
-		CRDDirectoryPaths:        []string{"../../charts/vela-core/crds"},
+		UseExistingCluster:       ptr.To(false),
+		CRDDirectoryPaths: []string{
+			"../../../../charts/vela-core/crds",
+		},
 	}
 
 	By("start kube test env")
@@ -65,18 +66,18 @@ var _ = BeforeSuite(func(done Done) {
 
 	By("new kube client")
 	cfg.Timeout = time.Minute * 2
-	k8sClient, err = client.New(cfg, client.Options{Scheme: common.Scheme})
+	testScheme := common.Scheme
+	err = cuexv1alpha1.AddToScheme(testScheme)
+	Expect(err).NotTo(HaveOccurred())
+	k8sClient, err = client.New(cfg, client.Options{Scheme: testScheme})
 	Expect(err).Should(BeNil())
 	Expect(k8sClient).ToNot(BeNil())
 	By("new kube client success")
-	clients.SetKubeClient(k8sClient)
+	singleton.KubeClient.Set(k8sClient)
+	fakeDynamicClient := fake.NewSimpleDynamicClient(testScheme)
+	singleton.DynamicClient.Set(fakeDynamicClient)
 
-	dm, err := discoverymapper.New(cfg)
-	Expect(err).To(BeNil())
-	pd, err := packages.NewPackageDiscover(cfg)
-	Expect(err).To(BeNil())
-
-	viewHandler = NewViewHandler(k8sClient, cfg, dm, pd)
+	viewHandler = NewViewHandler(k8sClient, cfg)
 	ctx := context.Background()
 
 	ns := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "vela-system"}}
@@ -90,8 +91,7 @@ var _ = BeforeSuite(func(done Done) {
 
 	Expect(common.ReadYamlToObject("./testdata/apply-object.yaml", &applyView)).Should(BeNil())
 	Expect(k8sClient.Create(ctx, &applyView)).Should(BeNil())
-	close(done)
-}, 240)
+})
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

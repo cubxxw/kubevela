@@ -54,11 +54,11 @@ const (
 )
 
 // NewSystemCommand print system detail info
-func NewSystemCommand(c common.Args) *cobra.Command {
+func NewSystemCommand(c common.Args, order string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "system",
 		Short: "Manage system.",
-		Long:  "Manage system, incluing printing the system deployment information in vela-system namespace and diagnosing the system's health.",
+		Long:  "Manage system, including printing the system deployment information in vela-system namespace and diagnosing the system's health.",
 		Example: "# Check all deployments information in all namespaces with label app.kubernetes.io/name=vela-core :\n" +
 			"> vela system info\n" +
 			"# Specify a deployment name with a namespace to check detail information:\n" +
@@ -66,7 +66,8 @@ func NewSystemCommand(c common.Args) *cobra.Command {
 			"# Diagnose the system's health:\n" +
 			"> vela system diagnose\n",
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeSystem,
+			types.TagCommandType:  types.TypeSystem,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.AddCommand(

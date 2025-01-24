@@ -21,12 +21,11 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/types"
 	cmdutil "github.com/oam-dev/kubevela/pkg/cmd/util"
-	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/env"
 )
 
 // GetNamespace get namespace from command flags and env
-func GetNamespace(f Factory, cmd *cobra.Command) string {
+func GetNamespace(_ Factory, cmd *cobra.Command) string {
 	namespace, err := cmd.Flags().GetString(flagNamespace)
 	cmdutil.CheckErr(err)
 	if namespace != "" {
@@ -38,7 +37,6 @@ func GetNamespace(f Factory, cmd *cobra.Command) string {
 		// ignore env if the command does not use the flag
 		return ""
 	}
-	cmdutil.CheckErr(common.SetGlobalClient(f.Client()))
 	var envMeta *types.EnvMeta
 	if envName != "" {
 		envMeta, err = env.GetEnvByName(envName)
@@ -49,6 +47,13 @@ func GetNamespace(f Factory, cmd *cobra.Command) string {
 		return ""
 	}
 	return envMeta.Namespace
+}
+
+// GetGroup get group from command flags
+func GetGroup(cmd *cobra.Command) string {
+	group, err := cmd.Flags().GetString(flagGroup)
+	cmdutil.CheckErr(err)
+	return group
 }
 
 // GetCluster get cluster from command flags

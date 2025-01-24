@@ -9,7 +9,6 @@ e2e-setup-core-post-hook:
 	kill -9 $(lsof -it:9098) || true
 	go run ./e2e/addon/mock &
 	bin/vela addon enable ./e2e/addon/mock/testdata/fluxcd
-	bin/vela addon enable ./e2e/addon/mock/testdata/rollout
 	bin/vela addon enable ./e2e/addon/mock/testdata/terraform
 	bin/vela addon enable ./e2e/addon/mock/testdata/terraform-alibaba ALICLOUD_ACCESS_KEY=xxx ALICLOUD_SECRET_KEY=yyy ALICLOUD_REGION=cn-beijing
 
@@ -27,9 +26,11 @@ e2e-setup-core-wo-auth:
 	    --set image.repository=vela-core-test       \
 	    --set applicationRevisionLimit=5            \
 	    --set optimize.disableComponentRevision=false        \
-	    --set dependCheckWait=10s                   \
 	    --set image.tag=$(GIT_COMMIT)               \
-	    --wait kubevela ./charts/vela-core
+			--set multicluster.clusterGateway.image.repository=ghcr.io/oam-dev/cluster-gateway \
+			--set admissionWebhooks.patch.image.repository=ghcr.io/oam-dev/kube-webhook-certgen/kube-webhook-certgen \
+	    --wait kubevela ./charts/vela-core          \
+			--debug
 
 .PHONY: e2e-setup-core-w-auth
 e2e-setup-core-w-auth:
@@ -39,8 +40,7 @@ e2e-setup-core-w-auth:
 	    --set image.pullPolicy=IfNotPresent             \
 	    --set image.repository=vela-core-test           \
 	    --set applicationRevisionLimit=5                \
-	    --set optimize.disableComponentRevision=false            \
-	    --set dependCheckWait=10s                       \
+	    --set optimize.disableComponentRevision=false   \
 	    --set image.tag=$(GIT_COMMIT)                   \
 	    --wait kubevela                                 \
 	    ./charts/vela-core                              \
@@ -48,40 +48,27 @@ e2e-setup-core-w-auth:
 	    --set authentication.withUser=true              \
 	    --set authentication.groupPattern=*             \
 	    --set featureGates.zstdResourceTracker=true     \
-	    --set featureGates.zstdApplicationRevision=true
+	    --set featureGates.zstdApplicationRevision=true \
+	    --set featureGates.validateComponentWhenSharding=true \
+	    --set multicluster.clusterGateway.enabled=true  \
+			--set multicluster.clusterGateway.image.repository=ghcr.io/oam-dev/cluster-gateway \
+			--set admissionWebhooks.patch.image.repository=ghcr.io/oam-dev/kube-webhook-certgen/kube-webhook-certgen \
+	    --set sharding.enabled=true                     \
+			--debug
+	kubectl get deploy kubevela-vela-core -oyaml -n vela-system | \
+		sed 's/schedulable-shards=/shard-id=shard-0/g' | \
+		sed 's/instance: kubevela/instance: kubevela-shard/g' | \
+		sed 's/shard-id: master/shard-id: shard-0/g' | \
+		sed 's/name: kubevela/name: kubevela-shard/g' | \
+		kubectl apply -f -
+	kubectl wait deployment -n vela-system kubevela-shard-vela-core --for condition=Available=True --timeout=90s
+
 
 .PHONY: e2e-setup-core
 e2e-setup-core: e2e-setup-core-pre-hook e2e-setup-core-wo-auth e2e-setup-core-post-hook
 
 .PHONY: e2e-setup-core-auth
 e2e-setup-core-auth: e2e-setup-core-pre-hook e2e-setup-core-w-auth e2e-setup-core-post-hook
-
-.PHONY: setup-runtime-e2e-cluster
-setup-runtime-e2e-cluster:
-	helm upgrade --install                               \
-	    --namespace vela-system                          \
-	    --wait oam-rollout                               \
-	    --set image.repository=vela-runtime-rollout-test \
-	    --set image.tag=$(GIT_COMMIT)                    \
-	    --set applicationRevisionLimit=6                 \
-	    --set optimize.disableComponentRevision=false             \
-	    ./runtime/rollout/charts
-
-	k3d cluster get $(RUNTIME_CLUSTER_NAME) && 			 \
-	helm upgrade --install                               \
-	    --create-namespace                               \
-	    --namespace vela-system                          \
-	    --kubeconfig=$(RUNTIME_CLUSTER_CONFIG)           \
-	    --set image.pullPolicy=IfNotPresent              \
-	    --set image.repository=vela-runtime-rollout-test \
-	    --set image.tag=$(GIT_COMMIT)                    \
-	    --set applicationRevisionLimit=6                 \
-	    --wait vela-rollout                              \
-	    --set optimize.disableComponentRevision=false              \
-	    ./runtime/rollout/charts ||						 \
-	echo "no worker cluster"					   		 \
-
-
 
 .PHONY: e2e-api-test
 e2e-api-test:
@@ -90,15 +77,10 @@ e2e-api-test:
 	ginkgo -v -r e2e/application
 
 
-.PHONY: e2e-apiserver-test
-e2e-apiserver-test:
-	go test -v -coverpkg=./... -coverprofile=/tmp/e2e_apiserver_test.out ./test/e2e-apiserver-test
-	@$(OK) tests pass
-
 .PHONY: e2e-test
 e2e-test:
 	# Run e2e test
-	ginkgo -v  --skip="rollout related e2e-test." ./test/e2e-test
+	ginkgo -v ./test/e2e-test
 	@$(OK) tests pass
 
 .PHONY: e2e-addon-test
@@ -107,14 +89,9 @@ e2e-addon-test:
 	ginkgo -v ./test/e2e-addon-test
 	@$(OK) tests pass
 
-.PHONY: e2e-rollout-test
-e2e-rollout-test:
-	ginkgo -v  --focus="rollout related e2e-test." ./test/e2e-test
-	@$(OK) tests pass
-
 .PHONY: e2e-multicluster-test
 e2e-multicluster-test:
-	go test -v -coverpkg=./... -coverprofile=/tmp/e2e_multicluster_test.out ./test/e2e-multicluster-test
+	cd ./test/e2e-multicluster-test && go test -v -ginkgo.v -ginkgo.trace -coverpkg=./... -coverprofile=/tmp/e2e_multicluster_test.out
 	@$(OK) tests pass
 
 .PHONY: e2e-cleanup
@@ -125,6 +102,10 @@ e2e-cleanup:
 .PHONY: end-e2e-core
 end-e2e-core:
 	sh ./hack/e2e/end_e2e_core.sh
+
+.PHONY: end-e2e-core-shards
+end-e2e-core-shards: end-e2e-core
+	CORE_NAME=kubevela-shard sh ./hack/e2e/end_e2e_core.sh
 
 .PHONY: end-e2e
 end-e2e:

@@ -34,8 +34,8 @@ import (
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	querytypes "github.com/oam-dev/kubevela/pkg/utils/types"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
-	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
 	"github.com/oam-dev/kubevela/references/appfile"
 )
 
@@ -86,8 +86,8 @@ func NewExecCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 		},
 	}
 	cmd := &cobra.Command{
-		Use:   "exec [flags] APP_NAME -- COMMAND [args...]",
-		Short: "Execute command in a container",
+		Use:   "exec",
+		Short: "Execute command in a container.",
 		Long:  "Execute command inside container based vela application.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			o.VelaC = c
@@ -118,16 +118,15 @@ func NewExecCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 			if err := o.Complete(); err != nil {
 				return err
 			}
-			if err := o.Run(); err != nil {
-				return err
-			}
-			return nil
+			return o.Run()
 		},
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
 			types.TagCommandType:  types.TypeApp,
 		},
 		Example: `
+		exec [flags] APP_NAME -- COMMAND [args...]
+
 		# Get output from running 'date' command from app pod, using the first container by default
 		vela exec my-app -- date
 

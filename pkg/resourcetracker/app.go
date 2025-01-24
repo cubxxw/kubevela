@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
+	"github.com/kubevela/pkg/controller/sharding"
 	"github.com/kubevela/pkg/util/compression"
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/cache"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -98,6 +100,7 @@ func createResourceTracker(ctx context.Context, cli client.Client, app *v1beta1.
 	if utilfeature.DefaultMutableFeatureGate.Enabled(features.ZstdResourceTracker) {
 		rt.Spec.Compression.Type = compression.Zstd
 	}
+	sharding.PropagateScheduledShardIDLabel(app, rt)
 	if err := cli.Create(ctx, rt); err != nil {
 		return nil, err
 	}
@@ -139,16 +142,21 @@ func newResourceTrackerFromApplicationResourceTracker(appRt *unstructured.Unstru
 
 func listApplicationResourceTrackers(ctx context.Context, cli client.Client, app *v1beta1.Application) ([]v1beta1.ResourceTracker, error) {
 	rts := v1beta1.ResourceTrackerList{}
-	err := cli.List(ctx, &rts, client.MatchingLabels{
-		oam.LabelAppName:      app.Name,
-		oam.LabelAppNamespace: app.Namespace,
-	})
+	var err error
+	if cache.OptimizeListOp {
+		err = cli.List(ctx, &rts, client.MatchingFields{cache.AppIndex: app.Namespace + "/" + app.Name})
+	} else {
+		err = cli.List(ctx, &rts, client.MatchingLabels{
+			oam.LabelAppName:      app.Name,
+			oam.LabelAppNamespace: app.Namespace,
+		})
+	}
 	if err == nil {
 		return rts.Items, nil
 	}
 	rtError := err
 	if !kerrors.IsForbidden(err) && !kerrors.IsUnauthorized(err) {
-		return nil, err
+		return nil, errors.WithMessage(err, "failed to list ResourceTrackers")
 	}
 	appRts := &unstructured.UnstructuredList{}
 	appRts.SetGroupVersionKind(applicationResourceTrackerGroupVersionKind)
@@ -180,7 +188,7 @@ func ListApplicationResourceTrackers(ctx context.Context, cli client.Client, app
 	metrics.ListResourceTrackerCounter.WithLabelValues("application").Inc()
 	rts, err := listApplicationResourceTrackers(ctx, cli, app)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, errors.WithMessage(err, "failed to list ResourceTrackers")
 	}
 	for _, _rt := range rts {
 		rt := _rt.DeepCopy()

@@ -19,6 +19,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/fatih/color"
@@ -29,16 +30,18 @@ import (
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	querytypes "github.com/oam-dev/kubevela/pkg/utils/types"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
-	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
 	"github.com/oam-dev/kubevela/references/appfile"
 )
+
+var re = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
 
 // NewLogsCommand creates `logs` command to tail logs of application
 func NewLogsCommand(c common.Args, order string, ioStreams util.IOStreams) *cobra.Command {
 	largs := &Args{Args: c}
 	cmd := &cobra.Command{
-		Use:   "logs APP_NAME",
+		Use:   "logs",
 		Short: "Tail logs for application.",
 		Long:  "Tail logs for vela application.",
 		Args:  cobra.ExactArgs(1),
@@ -55,10 +58,7 @@ func NewLogsCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 				return err
 			}
 			largs.App = app
-			if err := largs.Run(ctx, ioStreams); err != nil {
-				return err
-			}
-			return nil
+			return largs.Run(ctx, ioStreams)
 		},
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
@@ -122,6 +122,10 @@ func (l *Args) printPodLogs(ctx context.Context, ioStreams util.IOStreams, selec
 					}
 				}
 				if show {
+					match := re.FindStringSubmatch(str)
+					if len(match) > 1 {
+						str = strings.ReplaceAll(match[1], "\\n", "\n")
+					}
 					ioStreams.Infonln(str)
 				}
 			case <-ctx.Done():

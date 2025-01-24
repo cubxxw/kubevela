@@ -31,8 +31,6 @@ const defaultVelaHome = ".vela"
 const (
 	// VelaHomeEnv defines vela home system env
 	VelaHomeEnv = "VELA_HOME"
-	// StorageDriverEnv defines vela storage driver env
-	StorageDriverEnv = "STORAGE_DRIVER"
 )
 
 // GetVelaHomeDir return vela home dir
@@ -54,15 +52,6 @@ func GetVelaHomeDir() (string, error) {
 		}
 	}
 	return velaHome, nil
-}
-
-// GetDefaultFrontendDir return default vela frontend dir
-func GetDefaultFrontendDir() (string, error) {
-	home, err := GetVelaHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "frontend"), nil
 }
 
 // GetCapCenterDir return cap center dir
@@ -107,10 +96,7 @@ func InitDirs() error {
 	if err := InitCapabilityDir(); err != nil {
 		return err
 	}
-	if err := InitCapCenterDir(); err != nil {
-		return err
-	}
-	return nil
+	return InitCapCenterDir()
 }
 
 // InitCapCenterDir create dir if not exits

@@ -17,11 +17,14 @@ limitations under the License.
 package script
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
-	"gotest.tools/assert"
+	"cuelang.org/go/cue"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/stretchr/testify/assert"
 )
 
 var templateScript = `
@@ -126,22 +129,6 @@ parameter: {
 }
 `
 
-var withImport = `
-import (
-	"vela/op"
-)
-
-apply: op.#Apply & {
-	value:   parameter.value
-	cluster: parameter.cluster
-}
-parameter: {
-	// +usage=Specify the value of the object
-	value: {...}
-	// +usage=Specify the cluster of the object
-	cluster: *"" | string
-}`
-
 var withTemplate = `
 metadata: {
 	name: "xxx"
@@ -163,15 +150,15 @@ template: {
 
 func TestMergeValues(t *testing.T) {
 	var cueScript = CUE(templateScript)
-	value, err := cueScript.MergeValues(nil, map[string]interface{}{
+	v, err := cueScript.MergeValues(nil, map[string]interface{}{
 		"url":      "hub.docker.com",
 		"username": "name",
 	})
 	assert.Equal(t, err, nil)
-	output, err := value.LookupValue("template", "output")
-	assert.Equal(t, err, nil)
+	output := v.LookupPath(cue.ParsePath("template.output"))
+	assert.Equal(t, output.Err(), nil)
 	var data = map[string]interface{}{}
-	err = output.UnmarshalTo(&data)
+	err = value.UnmarshalTo(output, &data)
 	assert.Equal(t, err, nil)
 	assert.Equal(t, data["url"], "hub.docker.com")
 }
@@ -189,7 +176,27 @@ func TestRunAndOutput(t *testing.T) {
 	})
 	assert.Equal(t, err, nil)
 	var data = map[string]interface{}{}
-	err = output.UnmarshalTo(&data)
+	err = value.UnmarshalTo(output, &data)
+	assert.Equal(t, err, nil)
+	assert.Equal(t, data["name"], "nnn")
+	assert.Equal(t, data["namespace"], "ns")
+	assert.Equal(t, data["url"], "hub.docker.com")
+}
+
+func TestRunAndOutputWithCueX(t *testing.T) {
+	var cueScript = BuildCUEScriptWithDefaultContext([]byte("context:{namespace:string \n name:string}"), []byte(templateWithContextScript))
+	output, err := cueScript.RunAndOutputWithCueX(context.Background(), map[string]interface{}{
+		"name":      "nnn",
+		"namespace": "ns",
+	}, map[string]interface{}{
+		"url":      "hub.docker.com",
+		"username": "test",
+		"password": "test",
+		"caFile":   "test ca",
+	}, "template", "output")
+	assert.Equal(t, err, nil)
+	var data = map[string]interface{}{}
+	err = output.Decode(&data)
 	assert.Equal(t, err, nil)
 	assert.Equal(t, data["name"], "nnn")
 	assert.Equal(t, data["namespace"], "ns")
@@ -231,19 +238,51 @@ func TestValidateProperties(t *testing.T) {
 	assert.Equal(t, strings.Contains(err.(*ParameterError).Message, "2 errors in empty disjunction"), true)
 }
 
-func TestParsePropertiesToSchema(t *testing.T) {
+func TestValidatePropertiesWithCueX(t *testing.T) {
+	var cueScript = CUE(templateScript)
+	ctx := context.Background()
+	// miss the required parameter
+	err := cueScript.ValidatePropertiesWithCueX(ctx, map[string]interface{}{
+		"url": "hub.docker.com",
+	})
+	assert.Equal(t, err.(*ParameterError).Message, "This parameter is required")
+
+	// wrong the parameter value type
+	err = cueScript.ValidatePropertiesWithCueX(ctx, map[string]interface{}{
+		"url":      1,
+		"username": "ddd",
+	})
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Message, "conflicting values"), true)
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Name, "url"), true)
+
+	// wrong the parameter value
+	err = cueScript.ValidatePropertiesWithCueX(ctx, map[string]interface{}{
+		"url":      "ddd",
+		"username": "ddd",
+	})
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Message, "This parameter is required"), true)
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Name, "options"), true)
+
+	// wrong the parameter value and no required value
+	err = cueScript.ValidatePropertiesWithCueX(ctx, map[string]interface{}{
+		"url":      "ddd",
+		"username": "ddd",
+		"options":  "o3",
+	})
+	fmt.Println(err.(*ParameterError).Message)
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Name, "options"), true)
+	assert.Equal(t, strings.Contains(err.(*ParameterError).Message, "2 errors in empty disjunction"), true)
+}
+
+func TestParsePropertiesToSchemaWithCueX(t *testing.T) {
 	cue := CUE([]byte(withPackage))
-	schema, err := cue.ParsePropertiesToSchema()
+	ctx := context.Background()
+	schema, err := cue.ParsePropertiesToSchemaWithCueX(ctx, "")
 	assert.Equal(t, err, nil)
 	assert.Equal(t, len(schema.Properties), 10)
 
-	cue = CUE([]byte(withImport))
-	schema, err = cue.ParsePropertiesToSchema()
-	assert.Equal(t, err, nil)
-	assert.Equal(t, len(schema.Properties), 2)
-
 	cue = CUE([]byte(withTemplate))
-	schema, err = cue.ParsePropertiesToSchema("template")
+	schema, err = cue.ParsePropertiesToSchemaWithCueX(ctx, "template")
 	assert.Equal(t, err, nil)
 	assert.Equal(t, len(schema.Properties), 2)
 }

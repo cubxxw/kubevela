@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -124,17 +124,16 @@ func TestManagedResourceKeys(t *testing.T) {
 			},
 		},
 		OAMObjectReference: common.OAMObjectReference{
-			Env:       "env",
 			Component: "component",
 			Trait:     "trait",
 		},
 	}
 	r.Equal("namespace/name", input.NamespacedName().String())
 	r.Equal("apps/Deployment/cluster/namespace/name", input.ResourceKey())
-	r.Equal("env/component", input.ComponentKey())
+	r.Equal("cluster/component", input.ComponentKey())
 	r.Equal("Deployment name (Cluster: cluster, Namespace: namespace)", input.DisplayName())
 	var deploy1, deploy2 appsv1.Deployment
-	deploy1.Spec.Replicas = pointer.Int32(5)
+	deploy1.Spec.Replicas = ptr.To(int32(5))
 	bs, err := json.Marshal(deploy1)
 	r.NoError(err)
 	r.ErrorIs(input.UnmarshalTo(&deploy2), errors.ManagedResourceHasNoDataError{})
@@ -169,7 +168,7 @@ func TestResourceTracker_ManagedResource(t *testing.T) {
 	pod3 := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod3"}}
 	input.AddManagedResource(&pod3, false, false, "")
 	r.Equal(3, len(input.Spec.ManagedResources))
-	deploy1.Spec.Replicas = pointer.Int32(5)
+	deploy1.Spec.Replicas = ptr.To(int32(5))
 	input.AddManagedResource(&deploy1, false, false, "")
 	r.Equal(3, len(input.Spec.ManagedResources))
 	input.DeleteManagedResource(&cm2, false)
@@ -200,15 +199,11 @@ func TestResourceTrackerCompression(t *testing.T) {
 		"../../../charts/vela-core/crds/core.oam.dev_applicationrevisions.yaml",
 		"../../../charts/vela-core/crds/core.oam.dev_applications.yaml",
 		"../../../charts/vela-core/crds/core.oam.dev_definitionrevisions.yaml",
-		"../../../charts/vela-core/crds/core.oam.dev_healthscopes.yaml",
 		"../../../charts/vela-core/crds/core.oam.dev_traitdefinitions.yaml",
 		"../../../charts/vela-core/crds/core.oam.dev_componentdefinitions.yaml",
-		"../../../charts/vela-core/crds/core.oam.dev_workloaddefinitions.yaml",
-		"../../../charts/vela-core/crds/standard.oam.dev_rollouts.yaml",
 		"../../../charts/vela-core/templates/kubevela-controller.yaml",
 		"../../../charts/vela-core/README.md",
-		"../../../pkg/velaql/providers/query/testdata/machinelearning.seldon.io_seldondeployments.yaml",
-		"../../../legacy/charts/vela-core-legacy/crds/standard.oam.dev_podspecworkloads.yaml",
+		"../../../pkg/workflow/providers/legacy/query/testdata/machinelearning.seldon.io_seldondeployments.yaml",
 	}
 	for _, p := range paths {
 		b, err := os.ReadFile(p)

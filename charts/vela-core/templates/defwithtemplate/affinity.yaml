@@ -31,6 +31,9 @@ spec:
         						if k.namespace != _|_ {
         							namespace: k.namespace
         						}
+        						if k.namespaces != _|_ {
+        							namespaces: k.namespaces
+        						}
         						topologyKey: k.topologyKey
         						if k.namespaceSelector != _|_ {
         							namespaceSelector: k.namespaceSelector
@@ -56,6 +59,9 @@ spec:
         						}
         						if k.namespace != _|_ {
         							namespace: k.namespace
+        						}
+        						if k.namespaces != _|_ {
+        							namespaces: k.namespaces
         						}
         						topologyKey: k.topologyKey
         						if k.namespaceSelector != _|_ {
@@ -113,6 +119,7 @@ spec:
         			}]
         	}
         }
+
         #labelSelector: {
         	matchLabels?: [string]: string
         	matchExpressions?: [...{
@@ -121,21 +128,25 @@ spec:
         		values?: [...string]
         	}]
         }
+
         #podAffinityTerm: {
         	labelSelector?: #labelSelector
         	namespaces?: [...string]
         	topologyKey:        string
         	namespaceSelector?: #labelSelector
         }
+
         #nodeSelecor: {
         	key:      string
         	operator: *"In" | "NotIn" | "Exists" | "DoesNotExist" | "Gt" | "Lt"
         	values?: [...string]
         }
+
         #nodeSelectorTerm: {
         	matchExpressions?: [...#nodeSelecor]
         	matchFields?: [...#nodeSelecor]
         }
+
         parameter: {
         	// +usage=Specify the pod affinity scheduling rules
         	podAffinity?: {

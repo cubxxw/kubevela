@@ -17,12 +17,14 @@ limitations under the License.
 package definition
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
+	"github.com/kubevela/pkg/multicluster"
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,13 +33,16 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/model"
 	"github.com/kubevela/workflow/pkg/cue/model/sets"
 	"github.com/kubevela/workflow/pkg/cue/model/value"
-	"github.com/kubevela/workflow/pkg/cue/packages"
 	"github.com/kubevela/workflow/pkg/cue/process"
 
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/cue/task"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+
+	"github.com/oam-dev/kubevela/pkg/features"
 )
 
 const (
@@ -73,7 +78,6 @@ type AbstractEngine interface {
 
 type def struct {
 	name string
-	pd   *packages.PackageDiscover
 }
 
 type workloadDef struct {
@@ -81,21 +85,16 @@ type workloadDef struct {
 }
 
 // NewWorkloadAbstractEngine create Workload Definition AbstractEngine
-func NewWorkloadAbstractEngine(name string, pd *packages.PackageDiscover) AbstractEngine {
+func NewWorkloadAbstractEngine(name string) AbstractEngine {
 	return &workloadDef{
 		def: def{
 			name: name,
-			pd:   pd,
 		},
 	}
 }
 
 // Complete do workload definition's rendering
 func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, params interface{}) error {
-	bi := build.NewContext().NewInstance("", nil)
-	if err := value.AddFile(bi, "-", renderTemplate(abstractTemplate)); err != nil {
-		return errors.WithMessagef(err, "invalid cue template of workload %s", wd.name)
-	}
 	var paramFile = velaprocess.ParameterFieldName + ": {}"
 	if params != nil {
 		bt, err := json.Marshal(params)
@@ -106,22 +105,15 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 			paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(bt))
 		}
 	}
-	if err := value.AddFile(bi, velaprocess.ParameterFieldName, paramFile); err != nil {
-		return errors.WithMessagef(err, "invalid parameter of workload %s", wd.name)
-	}
 
 	c, err := ctx.BaseContextFile()
 	if err != nil {
 		return err
 	}
-	if err := value.AddFile(bi, "context", c); err != nil {
-		return err
-	}
 
-	val, err := wd.pd.ImportPackagesAndBuildValue(bi)
-	if err != nil {
-		return err
-	}
+	val := cuecontext.New().CompileString(strings.Join([]string{
+		renderTemplate(abstractTemplate), paramFile, c,
+	}, "\n"))
 
 	if err := val.Validate(); err != nil {
 		return errors.WithMessagef(err, "invalid cue template of workload %s after merge parameter and context", wd.name)
@@ -133,6 +125,14 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 	}
 	if err := ctx.SetBase(base); err != nil {
 		return err
+	}
+
+	// Strict Cue required field parameter validation
+	if utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableCueValidation) {
+		paramCue := val.LookupPath(value.FieldPath(velaprocess.ParameterFieldName))
+		if err := paramCue.Validate(cue.Concrete(true)); err != nil {
+			return errors.WithMessagef(err, "parameter error for %s", wd.name)
+		}
 	}
 
 	// we will support outputs for workload composition, and it will become trait in AppConfig.
@@ -160,6 +160,13 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 	return nil
 }
 
+func withCluster(ctx context.Context, o client.Object) context.Context {
+	if cluster := oam.GetCluster(o); cluster != "" {
+		return multicluster.WithCluster(ctx, cluster)
+	}
+	return ctx
+}
+
 func (wd *workloadDef) getTemplateContext(ctx process.Context, cli client.Reader, accessor util.NamespaceAccessor) (map[string]interface{}, error) {
 	baseLabels := GetBaseContextLabels(ctx)
 	var root = initRoot(baseLabels)
@@ -171,7 +178,8 @@ func (wd *workloadDef) getTemplateContext(ctx process.Context, cli client.Reader
 		return nil, err
 	}
 	// workload main resource will have a unique label("app.oam.dev/resourceType"="WORKLOAD") in per component/app level
-	object, err := getResourceFromObj(ctx, componentWorkload, cli, accessor.For(componentWorkload), util.MergeMapOverrideWithDst(map[string]string{
+	_ctx := withCluster(ctx.GetCtx(), componentWorkload)
+	object, err := getResourceFromObj(_ctx, ctx, componentWorkload, cli, accessor.For(componentWorkload), util.MergeMapOverrideWithDst(map[string]string{
 		oam.LabelOAMResourceType: oam.ResourceTypeWorkload,
 	}, commonLabels), "")
 	if err != nil {
@@ -191,7 +199,8 @@ func (wd *workloadDef) getTemplateContext(ctx process.Context, cli client.Reader
 			return nil, err
 		}
 		// AuxiliaryWorkload will have a unique label("trait.oam.dev/resource"="name of outputs") in per component/app level
-		object, err := getResourceFromObj(ctx, traitRef, cli, accessor.For(traitRef), util.MergeMapOverrideWithDst(map[string]string{
+		_ctx := withCluster(ctx.GetCtx(), traitRef)
+		object, err := getResourceFromObj(_ctx, ctx, traitRef, cli, accessor.For(traitRef), util.MergeMapOverrideWithDst(map[string]string{
 			oam.TraitTypeLabel: AuxiliaryWorkload,
 		}, commonLabels), assist.Name)
 		if err != nil {
@@ -249,10 +258,10 @@ func checkHealth(templateContext map[string]interface{}, healthPolicyTemplate st
 
 // Status get workload status by customStatusTemplate
 func (wd *workloadDef) Status(templateContext map[string]interface{}, customStatusTemplate string, parameter interface{}) (string, error) {
-	return getStatusMessage(wd.pd, templateContext, customStatusTemplate, parameter)
+	return getStatusMessage(templateContext, customStatusTemplate, parameter)
 }
 
-func getStatusMessage(pd *packages.PackageDiscover, templateContext map[string]interface{}, customStatusTemplate string, parameter interface{}) (string, error) {
+func getStatusMessage(templateContext map[string]interface{}, customStatusTemplate string, parameter interface{}) (string, error) {
 	if customStatusTemplate == "" {
 		return "", nil
 	}
@@ -262,11 +271,11 @@ func getStatusMessage(pd *packages.PackageDiscover, templateContext map[string]i
 	}
 	var buff = customStatusTemplate + "\n" + runtimeContextBuff
 
-	val, err := value.NewValue(buff, pd, "")
-	if err != nil {
-		return "", errors.WithMessage(err, "compile status template")
+	val := cuecontext.New().CompileString(buff)
+	if val.Err() != nil {
+		return "", errors.WithMessage(val.Err(), "compile status template")
 	}
-	message, err := val.CueValue().LookupPath(value.FieldPath(CustomMessage)).String()
+	message, err := val.LookupPath(value.FieldPath(CustomMessage)).String()
 	if err != nil {
 		return "", errors.WithMessage(err, "evaluate customStatus.message")
 	}
@@ -282,11 +291,10 @@ type traitDef struct {
 }
 
 // NewTraitAbstractEngine create Trait Definition AbstractEngine
-func NewTraitAbstractEngine(name string, pd *packages.PackageDiscover) AbstractEngine {
+func NewTraitAbstractEngine(name string) AbstractEngine {
 	return &traitDef{
 		def: def{
 			name: name,
-			pd:   pd,
 		},
 	}
 }
@@ -294,7 +302,6 @@ func NewTraitAbstractEngine(name string, pd *packages.PackageDiscover) AbstractE
 // Complete do trait definition's rendering
 // nolint:gocyclo
 func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, params interface{}) error {
-	bi := build.NewContext().NewInstance("", nil)
 	buff := abstractTemplate + "\n"
 	if params != nil {
 		bt, err := json.Marshal(params)
@@ -310,15 +317,8 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 		return err
 	}
 	buff += c
-	if err := value.AddFile(bi, "-", buff); err != nil {
-		return errors.WithMessagef(err, "invalid context of trait %s", td.name)
-	}
 
-	val, err := td.pd.ImportPackagesAndBuildValue(bi)
-	if err != nil {
-		return err
-	}
-
+	val := cuecontext.New().CompileString(buff)
 	if err := val.Validate(); err != nil {
 		return errors.WithMessagef(err, "invalid template of trait %s after merge with parameter and context", td.name)
 	}
@@ -351,13 +351,16 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 
 	patcher := val.LookupPath(value.FieldPath(PatchFieldName))
 	base, auxiliaries := ctx.Output()
-	if base != nil && patcher.Exists() {
+	if patcher.Exists() {
+		if base == nil {
+			return fmt.Errorf("patch trait %s into an invalid workload", td.name)
+		}
 		if err := base.Unify(patcher, sets.CreateUnifyOptionsForPatcher(patcher)...); err != nil {
 			return errors.WithMessagef(err, "invalid patch trait %s into workload", td.name)
 		}
 	}
 	outputsPatcher := val.LookupPath(value.FieldPath(PatchOutputsFieldName))
-	if base != nil && outputsPatcher.Exists() {
+	if outputsPatcher.Exists() {
 		for _, auxiliary := range auxiliaries {
 			target := outputsPatcher.LookupPath(value.FieldPath(auxiliary.Name))
 			if !target.Exists() {
@@ -448,7 +451,8 @@ func (td *traitDef) getTemplateContext(ctx process.Context, cli client.Reader, a
 		if err != nil {
 			return nil, err
 		}
-		object, err := getResourceFromObj(ctx, traitRef, cli, accessor.For(traitRef), util.MergeMapOverrideWithDst(map[string]string{
+		_ctx := withCluster(ctx.GetCtx(), traitRef)
+		object, err := getResourceFromObj(_ctx, ctx, traitRef, cli, accessor.For(traitRef), util.MergeMapOverrideWithDst(map[string]string{
 			oam.TraitTypeLabel: assist.Type,
 		}, commonLabels), assist.Name)
 		if err != nil {
@@ -464,7 +468,7 @@ func (td *traitDef) getTemplateContext(ctx process.Context, cli client.Reader, a
 
 // Status get trait status by customStatusTemplate
 func (td *traitDef) Status(templateContext map[string]interface{}, customStatusTemplate string, parameter interface{}) (string, error) {
-	return getStatusMessage(td.pd, templateContext, customStatusTemplate, parameter)
+	return getStatusMessage(templateContext, customStatusTemplate, parameter)
 }
 
 // HealthCheck address health check for trait
@@ -476,24 +480,24 @@ func (td *traitDef) GetTemplateContext(ctx process.Context, cli client.Client, a
 	return td.getTemplateContext(ctx, cli, accessor)
 }
 
-func getResourceFromObj(ctx process.Context, obj *unstructured.Unstructured, client client.Reader, namespace string, labels map[string]string, outputsResource string) (map[string]interface{}, error) {
+func getResourceFromObj(ctx context.Context, pctx process.Context, obj *unstructured.Unstructured, client client.Reader, namespace string, labels map[string]string, outputsResource string) (map[string]interface{}, error) {
 	if outputsResource != "" {
 		labels[oam.TraitResource] = outputsResource
 	}
 	if obj.GetName() != "" {
-		u, err := util.GetObjectGivenGVKAndName(ctx.GetCtx(), client, obj.GroupVersionKind(), namespace, obj.GetName())
+		u, err := util.GetObjectGivenGVKAndName(ctx, client, obj.GroupVersionKind(), namespace, obj.GetName())
 		if err != nil {
 			return nil, err
 		}
 		return u.Object, nil
 	}
-	if ctxName := ctx.GetData(model.ContextName).(string); ctxName != "" {
-		u, err := util.GetObjectGivenGVKAndName(ctx.GetCtx(), client, obj.GroupVersionKind(), namespace, ctxName)
+	if ctxName := pctx.GetData(model.ContextName).(string); ctxName != "" {
+		u, err := util.GetObjectGivenGVKAndName(ctx, client, obj.GroupVersionKind(), namespace, ctxName)
 		if err == nil {
 			return u.Object, nil
 		}
 	}
-	list, err := util.GetObjectsGivenGVKAndLabels(ctx.GetCtx(), client, obj.GroupVersionKind(), namespace, labels)
+	list, err := util.GetObjectsGivenGVKAndLabels(ctx, client, obj.GroupVersionKind(), namespace, labels)
 	if err != nil {
 		return nil, err
 	}

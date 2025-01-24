@@ -17,7 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -27,9 +29,16 @@ const (
 
 // GarbageCollectPolicySpec defines the spec of configuration drift
 type GarbageCollectPolicySpec struct {
+	// ApplicationRevisionLimit if set, this application will use this number for application revision instead of
+	// the global configuration
+	ApplicationRevisionLimit *int `json:"applicationRevisionLimit,omitempty"`
+
 	// KeepLegacyResource if is set, outdated versioned resourcetracker will not be recycled automatically
 	// outdated resources will be kept until resourcetracker be deleted manually
 	KeepLegacyResource bool `json:"keepLegacyResource,omitempty"`
+
+	// ContinueOnFailure if is set, continue to execute gc when the workflow fails, by default gc will be executed only after the workflow succeeds
+	ContinueOnFailure bool `json:"continueOnFailure,omitempty"`
 
 	// Order defines the order of garbage collect
 	Order GarbageCollectOrder `json:"order,omitempty"`
@@ -49,8 +58,9 @@ const (
 
 // GarbageCollectPolicyRule defines a single garbage-collect policy rule
 type GarbageCollectPolicyRule struct {
-	Selector ResourcePolicyRuleSelector `json:"selector"`
-	Strategy GarbageCollectStrategy     `json:"strategy"`
+	Selector    ResourcePolicyRuleSelector `json:"selector"`
+	Strategy    GarbageCollectStrategy     `json:"strategy"`
+	Propagation *GarbageCollectPropagation `json:"propagation"`
 }
 
 // GarbageCollectStrategy the strategy for target resource to recycle
@@ -66,6 +76,16 @@ const (
 	GarbageCollectStrategyOnAppUpdate GarbageCollectStrategy = "onAppUpdate"
 )
 
+// GarbageCollectPropagation the deletion propagation setting similar to metav1.DeletionPropagation
+type GarbageCollectPropagation string
+
+const (
+	// GarbageCollectPropagationOrphan orphan child resources while deleting target resources
+	GarbageCollectPropagationOrphan = "orphan"
+	// GarbageCollectPropagationCascading delete child resources in background while deleting target resources
+	GarbageCollectPropagationCascading = "cascading"
+)
+
 // Type the type name of the policy
 func (in *GarbageCollectPolicySpec) Type() string {
 	return GarbageCollectPolicyType
@@ -76,6 +96,21 @@ func (in *GarbageCollectPolicySpec) FindStrategy(manifest *unstructured.Unstruct
 	for _, rule := range in.Rules {
 		if rule.Selector.Match(manifest) {
 			return &rule.Strategy
+		}
+	}
+	return nil
+}
+
+// FindDeleteOption find delete option for target resource
+func (in *GarbageCollectPolicySpec) FindDeleteOption(manifest *unstructured.Unstructured) []client.DeleteOption {
+	for _, rule := range in.Rules {
+		if rule.Selector.Match(manifest) && rule.Propagation != nil {
+			switch *rule.Propagation {
+			case GarbageCollectPropagationOrphan:
+				return []client.DeleteOption{client.PropagationPolicy(metav1.DeletePropagationOrphan)}
+			case GarbageCollectPropagationCascading:
+				return []client.DeleteOption{client.PropagationPolicy(metav1.DeletePropagationBackground)}
+			}
 		}
 	}
 	return nil

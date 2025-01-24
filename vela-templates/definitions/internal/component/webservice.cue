@@ -47,7 +47,13 @@ webservice: {
 						observedGeneration: context.output.status.observedGeneration
 					}
 				}
-				isHealth: (context.output.spec.replicas == ready.readyReplicas) && (context.output.spec.replicas == ready.updatedReplicas) && (context.output.spec.replicas == ready.replicas) && (ready.observedGeneration == context.output.metadata.generation || ready.observedGeneration > context.output.metadata.generation)
+				_isHealth: (context.output.spec.replicas == ready.readyReplicas) && (context.output.spec.replicas == ready.updatedReplicas) && (context.output.spec.replicas == ready.replicas) && (ready.observedGeneration == context.output.metadata.generation || ready.observedGeneration > context.output.metadata.generation)
+				isHealth: *_isHealth | bool
+				if context.output.metadata.annotations != _|_ {
+					if context.output.metadata.annotations["app.oam.dev/disable-health-check"] != _|_ {
+						isHealth: true
+					}
+				}
 				"""#
 		}
 	}
@@ -204,16 +210,22 @@ template: {
 							}]
 						}
 						if parameter["ports"] != _|_ {
-							ports: [ for v in parameter.ports {
+							ports: [for v in parameter.ports {
 								{
-									containerPort: v.port
-									protocol:      v.protocol
+									containerPort: {
+										if v.containerPort != _|_ {v.containerPort}
+										if v.containerPort == _|_ {v.port}
+									}
+									protocol: v.protocol
 									if v.name != _|_ {
 										name: v.name
 									}
 									if v.name == _|_ {
-										_name: "port-" + strconv.FormatInt(v.port, 10)
-										name:  *_name | string
+										_name: {
+											if v.containerPort != _|_ {"port-" + strconv.FormatInt(v.containerPort, 10)}
+											if v.containerPort == _|_ {"port-" + strconv.FormatInt(v.port, 10)}
+										}
+										name: *_name | string
 										if v.protocol != "TCP" {
 											name: _name + "-" + strings.ToLower(v.protocol)
 										}
@@ -256,7 +268,7 @@ template: {
 						}
 
 						if parameter["volumes"] != _|_ && parameter["volumeMounts"] == _|_ {
-							volumeMounts: [ for v in parameter.volumes {
+							volumeMounts: [for v in parameter.volumes {
 								{
 									mountPath: v.mountPath
 									name:      v.name
@@ -283,14 +295,14 @@ template: {
 					}
 
 					if parameter["imagePullSecrets"] != _|_ {
-						imagePullSecrets: [ for v in parameter.imagePullSecrets {
+						imagePullSecrets: [for v in parameter.imagePullSecrets {
 							name: v
 						},
 						]
 					}
 
 					if parameter["volumes"] != _|_ && parameter["volumeMounts"] == _|_ {
-						volumes: [ for v in parameter.volumes {
+						volumes: [for v in parameter.volumes {
 							{
 								name: v.name
 								if v.type == "pvc" {
@@ -331,14 +343,20 @@ template: {
 
 	exposePorts: [
 		if parameter.ports != _|_ for v in parameter.ports if v.expose == true {
-			port:       v.port
-			targetPort: v.port
-			if v.name != _|_ {
-				name: v.name
-			}
+			port: v.port
+			if v.containerPort != _|_ {targetPort: v.containerPort}
+			if v.containerPort == _|_ {targetPort: v.port}
+			if v.name != _|_ {name: v.name}
 			if v.name == _|_ {
-				_name: "port-" + strconv.FormatInt(v.port, 10)
-				name:  *_name | string
+				_name: {
+					if v.containerPort != _|_ {
+						"port-" + strconv.FormatInt(v.containerPort, 10)
+					}
+					if v.containerPort == _|_ {
+						"port-" + strconv.FormatInt(v.port, 10)
+					}
+				}
+				name: *_name | string
 				if v.protocol != "TCP" {
 					name: _name + "-" + strings.ToLower(v.protocol)
 				}
@@ -393,6 +411,8 @@ template: {
 		ports?: [...{
 			// +usage=Number of port to expose on the pod's IP address
 			port: int
+			// +usage=Number of container port to connect to, defaults to port
+			containerPort?: int
 			// +usage=Name of the port
 			name?: string
 			// +usage=Protocol for port. Must be UDP, TCP, or SCTP

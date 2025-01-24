@@ -22,19 +22,19 @@ import (
 	"fmt"
 	"strings"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/pointer"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/features"
@@ -123,7 +123,7 @@ var _ = Describe("Test apply", func() {
 			Expect(rawClient.Get(ctx, deployKey, modifiedDeploy)).Should(Succeed())
 			By("Other applier changed the deployment")
 			modifiedDeploy.Spec.MinReadySeconds = 10
-			modifiedDeploy.Spec.ProgressDeadlineSeconds = pointer.Int32Ptr(20)
+			modifiedDeploy.Spec.ProgressDeadlineSeconds = ptr.To(int32(20))
 			modifiedDeploy.Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "test"}}
 			Expect(rawClient.Update(ctx, modifiedDeploy)).Should(Succeed())
 
@@ -185,7 +185,7 @@ var _ = Describe("Test apply", func() {
 			Expect(rawClient.Update(ctx, modifiedDeploy)).Should(Succeed())
 
 			By("Test patch")
-			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=false", features.ApplyResourceByUpdate))).Should(Succeed())
+			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=false", features.ApplyResourceByReplace))).Should(Succeed())
 			Expect(rawClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).Should(Succeed())
 			copy1 := originalDeploy.DeepCopy()
 			copy1.SetResourceVersion(deploy.ResourceVersion)
@@ -194,7 +194,7 @@ var _ = Describe("Test apply", func() {
 			Expect(len(deploy.Spec.Template.Spec.Containers)).Should(Equal(2))
 
 			By("Test update")
-			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", features.ApplyResourceByUpdate))).Should(Succeed())
+			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=true", features.ApplyResourceByReplace))).Should(Succeed())
 			Expect(rawClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).Should(Succeed())
 			copy2 := originalDeploy.DeepCopy()
 			copy2.SetResourceVersion(deploy.ResourceVersion)
@@ -202,7 +202,7 @@ var _ = Describe("Test apply", func() {
 			Expect(rawClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).Should(Succeed())
 			Expect(len(deploy.Spec.Template.Spec.Containers)).Should(Equal(1))
 
-			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=false", features.ApplyResourceByUpdate))).Should(Succeed())
+			Expect(utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("%s=false", features.ApplyResourceByReplace))).Should(Succeed())
 		})
 	})
 })

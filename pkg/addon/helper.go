@@ -58,7 +58,10 @@ func EnableAddon(ctx context.Context, name string, version string, cli client.Cl
 	if err != nil {
 		return "", err
 	}
-	return h.enableAddon(pkg)
+	if err := validateAddonPackage(pkg); err != nil {
+		return "", errors.Wrap(err, fmt.Sprintf("failed to enable addon: %s", name))
+	}
+	return h.enableAddon(ctx, pkg)
 }
 
 // DisableAddon will disable addon from cluster.
@@ -80,10 +83,7 @@ func DisableAddon(ctx context.Context, cli client.Client, name string, config *r
 		}
 	}
 
-	if err := cli.Delete(ctx, app); err != nil {
-		return err
-	}
-	return nil
+	return cli.Delete(ctx, app)
 }
 
 // EnableAddonByLocalDir enable an addon from local dir
@@ -106,6 +106,9 @@ func EnableAddonByLocalDir(ctx context.Context, name string, dir string, cli cli
 	if err != nil {
 		return "", err
 	}
+	if err := validateAddonPackage(pkg); err != nil {
+		return "", errors.Wrap(err, fmt.Sprintf("failed to enable addon by local dir: %s", dir))
+	}
 	h := NewAddonInstaller(ctx, cli, dc, applicator, config, &Registry{Name: LocalAddonRegistryName}, args, nil, nil, opts...)
 	needEnableAddonNames, err := h.checkDependency(pkg)
 	if err != nil {
@@ -114,7 +117,7 @@ func EnableAddonByLocalDir(ctx context.Context, name string, dir string, cli cli
 	if len(needEnableAddonNames) > 0 {
 		return "", fmt.Errorf("you must first enable dependencies: %v", needEnableAddonNames)
 	}
-	return h.enableAddon(pkg)
+	return h.enableAddon(ctx, pkg)
 }
 
 // GetAddonStatus is general func for cli and apiServer get addon status
@@ -187,7 +190,6 @@ func FindAddonPackagesDetailFromRegistry(ctx context.Context, k8sClient client.C
 	if len(addonNames) == 0 {
 		return nil, fmt.Errorf("no addon name specified")
 	}
-
 	registryDataStore := NewRegistryDataStore(k8sClient)
 
 	// Find matched registries
@@ -248,7 +250,7 @@ func FindAddonPackagesDetailFromRegistry(ctx context.Context, k8sClient client.C
 				if !ok {
 					continue
 				}
-				uiData, err := r.GetUIData(&sourceMeta, CLIMetaOptions)
+				uiData, err := r.GetUIData(&sourceMeta, UIMetaOptions)
 				if err != nil {
 					continue
 				}

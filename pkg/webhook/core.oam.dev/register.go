@@ -21,43 +21,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/conversion"
 
 	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/application"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/applicationconfiguration"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/component"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/componentdefinition"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/traitdefinition"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/application"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/componentdefinition"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/policydefinition"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/traitdefinition"
 )
 
 // Register will be called in main and register all validation handlers
 func Register(mgr manager.Manager, args controller.Args) {
-	switch args.OAMSpecVer {
-	case "all":
-		application.RegisterValidatingHandler(mgr, args)
-		componentdefinition.RegisterMutatingHandler(mgr, args)
-		componentdefinition.RegisterValidatingHandler(mgr, args)
-		traitdefinition.RegisterValidatingHandler(mgr, args)
-		applicationconfiguration.RegisterMutatingHandler(mgr)
-		applicationconfiguration.RegisterValidatingHandler(mgr, args)
-		component.RegisterMutatingHandler(mgr, args)
-		component.RegisterValidatingHandler(mgr)
-	case "minimal":
-		application.RegisterValidatingHandler(mgr, args)
-		componentdefinition.RegisterMutatingHandler(mgr, args)
-		componentdefinition.RegisterValidatingHandler(mgr, args)
-		traitdefinition.RegisterValidatingHandler(mgr, args)
-	case "v0.3":
-		application.RegisterValidatingHandler(mgr, args)
-		application.RegisterMutatingHandler(mgr)
-		componentdefinition.RegisterMutatingHandler(mgr, args)
-		componentdefinition.RegisterValidatingHandler(mgr, args)
-		traitdefinition.RegisterValidatingHandler(mgr, args)
-	case "v0.2":
-		applicationconfiguration.RegisterMutatingHandler(mgr)
-		applicationconfiguration.RegisterValidatingHandler(mgr, args)
-		component.RegisterMutatingHandler(mgr, args)
-		component.RegisterValidatingHandler(mgr)
-	}
-
+	application.RegisterValidatingHandler(mgr, args)
+	application.RegisterMutatingHandler(mgr)
+	componentdefinition.RegisterMutatingHandler(mgr, args)
+	componentdefinition.RegisterValidatingHandler(mgr)
+	traitdefinition.RegisterValidatingHandler(mgr, args)
+	policydefinition.RegisterValidatingHandler(mgr)
 	server := mgr.GetWebhookServer()
-	server.Register("/convert", &conversion.Webhook{})
+	server.Register("/convert", conversion.NewWebhookHandler(mgr.GetScheme()))
 }

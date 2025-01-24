@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/kubevela/workflow/api/v1alpha1"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -48,13 +48,13 @@ var cfg *rest.Config
 var k8sClient client.Client
 var testEnv *envtest.Environment
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	// env init
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute * 3,
 		ControlPlaneStopTimeout:  time.Minute,
-		UseExistingCluster:       pointer.BoolPtr(false),
+		UseExistingCluster:       ptr.To(false),
 		CRDDirectoryPaths: []string{
 			"../../../../charts/vela-core/crds",
 		},
@@ -71,6 +71,14 @@ var _ = BeforeSuite(func(done Done) {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: common.Scheme})
 	Expect(err).Should(BeNil())
 	Expect(k8sClient).ToNot(BeNil())
+
+	// create namespace
+	By("create namespace")
+	_ = k8sClient.Create(context.Background(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "default",
+		},
+	})
 	// create app
 	name, namespace := "first-vela-app", "default"
 	testApp := &v1beta1.Application{
@@ -377,9 +385,7 @@ var _ = BeforeSuite(func(done Done) {
 		}},
 	}
 	Expect(k8sClient.Create(context.Background(), pod2)).Should(BeNil())
-
-	close(done)
-}, 240)
+})
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

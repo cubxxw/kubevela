@@ -29,19 +29,8 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
-	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
-
-// Kube defines the encapsulation in raw Kubernetes resource format
-type Kube struct {
-	// Template defines the raw Kubernetes resource
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Template runtime.RawExtension `json:"template"`
-
-	// Parameters defines configurable parameters
-	Parameters []KubeParameter `json:"parameters,omitempty"`
-}
 
 // ParameterValueType refers to a data type of parameter
 type ParameterValueType string
@@ -53,31 +42,6 @@ const (
 	BooleanType ParameterValueType = "boolean"
 )
 
-// A KubeParameter defines a configurable parameter of a component.
-type KubeParameter struct {
-	// Name of this parameter
-	Name string `json:"name"`
-
-	// +kubebuilder:validation:Enum:=string;number;boolean
-	// ValueType indicates the type of the parameter value, and
-	// only supports basic data types: string, number, boolean.
-	ValueType ParameterValueType `json:"type"`
-
-	// FieldPaths specifies an array of fields within this workload that will be
-	// overwritten by the value of this parameter. 	All fields must be of the
-	// same type. Fields are specified as JSON field paths without a leading
-	// dot, for example 'spec.replicas'.
-	FieldPaths []string `json:"fieldPaths"`
-
-	// +kubebuilder:default:=false
-	// Required specifies whether or not a value for this parameter must be
-	// supplied when authoring an Application.
-	Required *bool `json:"required,omitempty"`
-
-	// Description of this parameter.
-	Description *string `json:"description,omitempty"`
-}
-
 // CUE defines the encapsulation in CUE format
 type CUE struct {
 	// Template defines the abstraction template data of the capability, it will replace the old CUE template in extension field.
@@ -88,24 +52,9 @@ type CUE struct {
 // Schematic defines the encapsulation of this capability(workload/trait/scope),
 // the encapsulation can be defined in different ways, e.g. CUE/HCL(terraform)/KUBE(K8s Object)/HELM, etc...
 type Schematic struct {
-	KUBE *Kube `json:"kube,omitempty"`
-
 	CUE *CUE `json:"cue,omitempty"`
 
-	HELM *Helm `json:"helm,omitempty"`
-
 	Terraform *Terraform `json:"terraform,omitempty"`
-}
-
-// A Helm represents resources used by a Helm module
-type Helm struct {
-	// Release records a Helm release used by a Helm module workload.
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Release runtime.RawExtension `json:"release"`
-
-	// HelmRelease records a Helm repository used by a Helm module workload.
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Repository runtime.RawExtension `json:"repository"`
 }
 
 // Terraform is the struct to describe cloud resources managed by Hashicorp Terraform
@@ -214,26 +163,6 @@ const (
 	ApplicationDeleting ApplicationPhase = "deleting"
 )
 
-// WorkflowState is a string that mark the workflow state
-type WorkflowState string
-
-const (
-	// WorkflowStateInitializing means the workflow is in initial state
-	WorkflowStateInitializing WorkflowState = "Initializing"
-	// WorkflowStateTerminated means workflow is terminated manually, and it won't be started unless the spec changed.
-	WorkflowStateTerminated WorkflowState = "Terminated"
-	// WorkflowStateSuspended means workflow is suspended manually, and it can be resumed.
-	WorkflowStateSuspended WorkflowState = "Suspended"
-	// WorkflowStateSucceeded means workflow is running successfully, all steps finished.
-	WorkflowStateSucceeded WorkflowState = "Succeeded"
-	// WorkflowStateFinished means workflow is end.
-	WorkflowStateFinished WorkflowState = "Finished"
-	// WorkflowStateExecuting means workflow is still running or waiting some steps.
-	WorkflowStateExecuting WorkflowState = "Executing"
-	// WorkflowStateSkipping means it will skip this reconcile and let next reconcile to handle it.
-	WorkflowStateSkipping WorkflowState = "Skipping"
-)
-
 // ApplicationComponentStatus record the health status of App component
 type ApplicationComponentStatus struct {
 	Name      string `json:"name"`
@@ -268,13 +197,6 @@ type Revision struct {
 
 	// RevisionHash record the hash value of the spec of ApplicationRevision object.
 	RevisionHash string `json:"revisionHash,omitempty"`
-}
-
-// RawComponent record raw component
-type RawComponent struct {
-	// +kubebuilder:validation:EmbeddedResource
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Raw runtime.RawExtension `json:"raw"`
 }
 
 // AppStatus defines the observed state of Application
@@ -336,7 +258,8 @@ type WorkflowStatus struct {
 	Steps          []workflowv1alpha1.WorkflowStepStatus `json:"steps,omitempty"`
 
 	StartTime metav1.Time `json:"startTime,omitempty"`
-	EndTime   metav1.Time `json:"endTime,omitempty"`
+	// +nullable
+	EndTime metav1.Time `json:"endTime,omitempty"`
 }
 
 // DefinitionType describes the type of DefinitionRevision.
@@ -356,19 +279,6 @@ const (
 	// WorkflowStepType represents DefinitionRevision refer to type WorkflowStepDefinition
 	WorkflowStepType DefinitionType = "WorkflowStep"
 )
-
-// AppRolloutStatus defines the observed state of AppRollout
-type AppRolloutStatus struct {
-	v1alpha1.RolloutStatus `json:",inline"`
-
-	// LastUpgradedTargetAppRevision contains the name of the app that we upgraded to
-	// We will restart the rollout if this is not the same as the spec
-	LastUpgradedTargetAppRevision string `json:"lastTargetAppRevision"`
-
-	// LastSourceAppRevision contains the name of the app that we need to upgrade from.
-	// We will restart the rollout if this is not the same as the spec
-	LastSourceAppRevision string `json:"LastSourceAppRevision,omitempty"`
-}
 
 // ApplicationTrait defines the trait of application
 type ApplicationTrait struct {
@@ -413,41 +323,22 @@ type ClusterSelector struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
-// Distribution defines the replica distribution of an AppRevision to a cluster.
-type Distribution struct {
-	// Replicas is the replica number.
-	Replicas int `json:"replicas,omitempty"`
-}
-
-// ClusterPlacement defines the cluster placement rules for an app revision.
-type ClusterPlacement struct {
-	// ClusterSelector selects the cluster to  deploy apps to.
-	// If not specified, it indicates the host cluster per se.
-	ClusterSelector *ClusterSelector `json:"clusterSelector,omitempty"`
-
-	// Distribution defines the replica distribution of an AppRevision to a cluster.
-	Distribution Distribution `json:"distribution,omitempty"`
-}
-
 const (
 	// PolicyResourceCreator create the policy resource.
 	PolicyResourceCreator string = "policy"
 	// WorkflowResourceCreator create the resource in workflow.
 	WorkflowResourceCreator string = "workflow"
-	// DebugResourceCreator create the debug resource.
-	DebugResourceCreator string = "debug"
 )
 
 // OAMObjectReference defines the object reference for an oam resource
 type OAMObjectReference struct {
 	Component string `json:"component,omitempty"`
 	Trait     string `json:"trait,omitempty"`
-	Env       string `json:"env,omitempty"`
 }
 
 // Equal check if two references are equal
 func (in OAMObjectReference) Equal(r OAMObjectReference) bool {
-	return in.Component == r.Component && in.Trait == r.Trait && in.Env == r.Env
+	return in.Component == r.Component && in.Trait == r.Trait
 }
 
 // AddLabelsToObject add labels to object if properties are not empty
@@ -462,9 +353,6 @@ func (in OAMObjectReference) AddLabelsToObject(obj client.Object) {
 	if in.Trait != "" {
 		labels[oam.TraitTypeLabel] = in.Trait
 	}
-	if in.Env != "" {
-		labels[oam.LabelAppEnv] = in.Env
-	}
 	obj.SetLabels(labels)
 }
 
@@ -474,7 +362,6 @@ func NewOAMObjectReferenceFromObject(obj client.Object) OAMObjectReference {
 		return OAMObjectReference{
 			Component: labels[oam.LabelAppComponent],
 			Trait:     labels[oam.TraitTypeLabel],
-			Env:       labels[oam.LabelAppEnv],
 		}
 	}
 	return OAMObjectReference{}
@@ -532,8 +419,6 @@ const (
 	RenderCondition
 	// WorkflowCondition indicates whether workflow processing is successful.
 	WorkflowCondition
-	// RolloutCondition indicates whether rollout processing is successful.
-	RolloutCondition
 	// ReadyCondition indicates whether whole application processing is successful.
 	ReadyCondition
 )
@@ -544,7 +429,6 @@ var conditions = map[ApplicationConditionType]string{
 	PolicyCondition:   "Policy",
 	RenderCondition:   "Render",
 	WorkflowCondition: "Workflow",
-	RolloutCondition:  "Rollout",
 	ReadyCondition:    "Ready",
 }
 

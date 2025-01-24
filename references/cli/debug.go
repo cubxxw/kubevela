@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/FogDong/uitable"
 	"github.com/fatih/color"
@@ -34,16 +35,11 @@ import (
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 	"github.com/kubevela/workflow/pkg/cue/model/sets"
-	"github.com/kubevela/workflow/pkg/cue/model/value"
-	"github.com/kubevela/workflow/pkg/cue/packages"
 	"github.com/kubevela/workflow/pkg/debug"
-	"github.com/kubevela/workflow/pkg/tasks/custom"
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile/dryrun"
-	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
@@ -59,7 +55,7 @@ type debugOpts struct {
 }
 
 // NewDebugCommand create `debug` command
-func NewDebugCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewDebugCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	ctx := context.Background()
 	dOpts := &debugOpts{}
 	wargs := &WorkflowArgs{
@@ -69,10 +65,14 @@ func NewDebugCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command 
 	cmd := &cobra.Command{
 		Use:     "debug",
 		Aliases: []string{"debug"},
-		Short:   "Debug running application",
+		Short:   "Debug running application.",
 		Long:    "Debug running application with debug policy.",
 		Example: `vela debug <application-name>`,
-		PreRun:  wargs.checkDebugMode(),
+		Annotations: map[string]string{
+			types.TagCommandType:  types.TypeApp,
+			types.TagCommandOrder: order,
+		},
+		PreRun: wargs.checkDebugMode(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {
 				return fmt.Errorf("must specify application name")
@@ -106,33 +106,22 @@ func (d *debugOpts) debugApplication(ctx context.Context, wargs *WorkflowArgs, c
 	if err != nil {
 		return err
 	}
-	pd, err := c.GetPackageDiscover()
-	if err != nil {
-		return err
-	}
 	d.opts = wargs.getWorkflowSteps()
 	d.errMap = wargs.ErrMap
 	if app.Spec.Workflow != nil && len(app.Spec.Workflow.Steps) > 0 {
-		return d.debugWorkflow(ctx, wargs, cli, pd, ioStreams)
+		return d.debugWorkflow(ctx, wargs, cli, ioStreams)
 	}
 
-	dm, err := discoverymapper.New(config)
-	if err != nil {
-		return err
-	}
-	dryRunOpt := dryrun.NewDryRunOption(cli, config, dm, pd, []oam.Object{}, false)
+	dryRunOpt := dryrun.NewDryRunOption(cli, config, []*unstructured.Unstructured{}, false)
 	comps, _, err := dryRunOpt.ExecuteDryRun(ctx, app)
 	if err != nil {
 		ioStreams.Info(color.RedString("%s%s", emojiFail, err.Error()))
 		return nil
 	}
-	if err := d.debugComponents(comps, ioStreams); err != nil {
-		return err
-	}
-	return nil
+	return d.debugComponents(comps, ioStreams)
 }
 
-func (d *debugOpts) debugWorkflow(ctx context.Context, wargs *WorkflowArgs, cli client.Client, pd *packages.PackageDiscover, ioStreams cmdutil.IOStreams) error {
+func (d *debugOpts) debugWorkflow(ctx context.Context, wargs *WorkflowArgs, cli client.Client, ioStreams cmdutil.IOStreams) error {
 	if d.step == "" {
 		prompt := &survey.Select{
 			Message: "Select the workflow step to debug:",
@@ -143,12 +132,14 @@ func (d *debugOpts) debugWorkflow(ctx context.Context, wargs *WorkflowArgs, cli 
 		if err != nil {
 			return fmt.Errorf("failed to select workflow step: %w", err)
 		}
-		d.step = unwrapStepName(step)
+		d.step = unwrapStepID(step, wargs.WorkflowInstance)
 		d.errMsg = d.errMap[d.step]
+	} else {
+		d.step = unwrapStepID(d.step, wargs.WorkflowInstance)
 	}
 
 	// debug workflow steps
-	rawValue, data, err := d.getDebugRawValue(ctx, cli, pd, wargs.WorkflowInstance)
+	rawValue, data, err := d.getDebugRawValue(ctx, cli, wargs.WorkflowInstance)
 	if err != nil {
 		if data != "" {
 			ioStreams.Info(color.RedString("%s%s", emojiFail, err.Error()))
@@ -175,8 +166,8 @@ func (d *debugOpts) debugComponents(comps []*types.ComponentManifest, ioStreams 
 	var components = make(map[string]*unstructured.Unstructured)
 	var traits = make(map[string][]*unstructured.Unstructured)
 	for _, comp := range comps {
-		components[comp.Name] = comp.StandardWorkload
-		traits[comp.Name] = comp.Traits
+		components[comp.Name] = comp.ComponentOutput
+		traits[comp.Name] = comp.ComponentOutputsAndTraits
 	}
 
 	if d.step != "" {
@@ -261,37 +252,52 @@ func unwrapStepName(step string) string {
 	}
 }
 
-func (d *debugOpts) getDebugRawValue(ctx context.Context, cli client.Client, pd *packages.PackageDiscover, instance *wfTypes.WorkflowInstance) (*value.Value, string, error) {
+func unwrapStepID(step string, instance *wfTypes.WorkflowInstance) string {
+	step = unwrapStepName(step)
+	for _, status := range instance.Status.Steps {
+		if status.Name == step {
+			return status.ID
+		}
+		for _, sub := range status.SubStepsStatus {
+			if sub.Name == step {
+				return sub.ID
+			}
+		}
+	}
+	return step
+}
+
+func (d *debugOpts) getDebugRawValue(ctx context.Context, cli client.Client, instance *wfTypes.WorkflowInstance) (cue.Value, string, error) {
 	debugCM := &corev1.ConfigMap{}
 	if err := cli.Get(ctx, client.ObjectKey{Name: debug.GenerateContextName(instance.Name, d.step, string(instance.UID)), Namespace: instance.Namespace}, debugCM); err != nil {
 		for _, step := range instance.Status.Steps {
 			if step.Name == d.step && (step.Type == wfTypes.WorkflowStepTypeSuspend || step.Type == wfTypes.WorkflowStepTypeStepGroup) {
-				return nil, "", fmt.Errorf("no debug data for a suspend or step-group step, please choose another step")
+				return cue.Value{}, "", fmt.Errorf("no debug data for a suspend or step-group step, please choose another step")
 			}
 			for _, sub := range step.SubStepsStatus {
 				if sub.Name == d.step && sub.Type == wfTypes.WorkflowStepTypeSuspend {
-					return nil, "", fmt.Errorf("no debug data for a suspend step, please choose another step")
+					return cue.Value{}, "", fmt.Errorf("no debug data for a suspend step, please choose another step")
 				}
 			}
 		}
-		return nil, "", fmt.Errorf("failed to get debug configmap, please make sure the you're in the debug mode`: %w", err)
+		return cue.Value{}, "", fmt.Errorf("failed to get debug configmap, please make sure the you're in the debug mode`: %w", err)
 	}
 
 	if debugCM.Data == nil || debugCM.Data["debug"] == "" {
-		return nil, "", fmt.Errorf("debug configmap is empty")
+		return cue.Value{}, "", fmt.Errorf("debug configmap is empty")
 	}
-	v, err := value.NewValue(debugCM.Data["debug"], pd, "")
-	if err != nil {
-		return nil, debugCM.Data["debug"], fmt.Errorf("failed to parse debug configmap: %w", err)
+	v := cuecontext.New().CompileString(debugCM.Data["debug"])
+	if v.Err() != nil {
+		return cue.Value{}, debugCM.Data["debug"], fmt.Errorf("failed to parse debug configmap: %w", v.Err())
 	}
 	return v, debugCM.Data["debug"], nil
 }
 
-func (d *debugOpts) handleCueSteps(v *value.Value, ioStreams cmdutil.IOStreams) error {
+func (d *debugOpts) handleCueSteps(v cue.Value, ioStreams cmdutil.IOStreams) error {
 	if d.focus != "" {
-		f, err := v.LookupValue(strings.Split(d.focus, ".")...)
-		if err != nil {
-			return err
+		f := v.LookupPath(cue.ParsePath(d.focus))
+		if f.Err() != nil {
+			return f.Err()
 		}
 		ioStreams.Info(color.New(color.FgCyan).Sprint("\n", d.focus, "\n"))
 		rendered, err := renderFields(f, &renderOptions{})
@@ -302,28 +308,23 @@ func (d *debugOpts) handleCueSteps(v *value.Value, ioStreams cmdutil.IOStreams) 
 		return nil
 	}
 
-	if err := d.separateBySteps(v, ioStreams); err != nil {
-		return err
-	}
-	return nil
+	return d.separateBySteps(v, ioStreams)
 }
 
-func (d *debugOpts) separateBySteps(v *value.Value, ioStreams cmdutil.IOStreams) error {
-	fieldMap := make(map[string]*value.Value)
+func (d *debugOpts) separateBySteps(v cue.Value, ioStreams cmdutil.IOStreams) error {
+	fieldMap := make(map[string]cue.Value)
 	fieldList := make([]string, 0)
-	if err := v.StepByFields(func(fieldName string, in *value.Value) (bool, error) {
-		if in.CueValue().IncompleteKind() == cue.BottomKind {
-			errInfo, err := sets.ToString(in.CueValue())
-			if err != nil {
-				errInfo = "value is _|_"
-			}
-			return true, errors.New(errInfo + "value is _|_ (bottom kind)")
+	it, err := v.Fields(cue.Optional(true), cue.Hidden(true))
+	if err != nil {
+		return fmt.Errorf("failed to get fields: %w", err)
+	}
+	for it.Next() {
+		if it.Value().IncompleteKind() == cue.BottomKind {
+			break
 		}
+		fieldName := it.Label()
 		fieldList = append(fieldList, fieldName)
-		fieldMap[fieldName] = in
-		return false, nil
-	}); err != nil {
-		return fmt.Errorf("failed to parse debug configmap by field: %w", err)
+		fieldMap[fieldName] = it.Value()
 	}
 
 	errStep := ""
@@ -382,18 +383,24 @@ type renderOptions struct {
 	filterFields []string
 }
 
-func renderFields(v *value.Value, opt *renderOptions) (string, error) {
+func renderFields(v cue.Value, opt *renderOptions) (string, error) {
 	table := uitable.New()
 	table.MaxColWidth = 200
 	table.Wrap = true
 	i := 0
 
-	if err := v.StepByFields(func(fieldName string, in *value.Value) (bool, error) {
+	it, err := v.Fields(cue.Optional(true), cue.Hidden(true))
+	if err != nil {
+		return "", fmt.Errorf("failed to get fields: %w", err)
+	}
+	for it.Next() {
+		in := it.Value()
+		fieldName := in.Path().String()
 		key := ""
-		if custom.OpTpy(in) != "" {
+		if in.LookupPath(cue.ParsePath("#do")).Exists() {
 			rendered, err := renderFields(in, opt)
 			if err != nil {
-				return false, err
+				continue
 			}
 			i++
 			if !opt.hideIndex {
@@ -401,9 +408,9 @@ func renderFields(v *value.Value, opt *renderOptions) (string, error) {
 			}
 			key += fieldName
 			if !strings.Contains(fieldName, "#") {
-				if err := v.FillObject(in, fieldName); err != nil {
+				v = v.FillPath(cue.ParsePath(fieldName), in)
+				if v.Err() != nil {
 					renderValuesInRow(table, key, rendered, false)
-					return false, err
 				}
 			}
 			if len(opt.filterFields) > 0 {
@@ -415,12 +422,11 @@ func renderFields(v *value.Value, opt *renderOptions) (string, error) {
 			} else {
 				renderValuesInRow(table, key, rendered, true)
 			}
-			return false, nil
+			continue
 		}
-
-		vStr, err := in.String()
+		vStr, err := sets.ToString(in)
 		if err != nil {
-			return false, err
+			continue
 		}
 		i++
 		if !opt.hideIndex {
@@ -428,9 +434,9 @@ func renderFields(v *value.Value, opt *renderOptions) (string, error) {
 		}
 		key += fieldName
 		if !strings.Contains(fieldName, "#") {
-			if err := v.FillObject(in, fieldName); err != nil {
+			v = v.FillPath(cue.ParsePath(fieldName), in)
+			if v.Err() != nil {
 				renderValuesInRow(table, key, vStr, false)
-				return false, err
 			}
 		}
 
@@ -443,17 +449,7 @@ func renderFields(v *value.Value, opt *renderOptions) (string, error) {
 		} else {
 			renderValuesInRow(table, key, vStr, true)
 		}
-		return false, nil
-	}); err != nil {
-		vStr, serr := v.String()
-		if serr != nil {
-			return "", serr
-		}
-		if strings.Contains(err.Error(), "(type string) as struct") {
-			return strings.TrimSpace(vStr), nil
-		}
 	}
-
 	return table.String(), nil
 }
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/hashicorp/go-version"
+	"github.com/kubevela/pkg/util/slices"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +34,7 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/auth"
@@ -41,6 +43,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/policy"
 	"github.com/oam-dev/kubevela/pkg/resourcetracker"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
@@ -60,13 +63,16 @@ type GCOption interface {
 type gcConfig struct {
 	passive bool
 
-	disableMark                bool
-	disableSweep               bool
-	disableFinalize            bool
-	disableComponentRevisionGC bool
-	disableLegacyGC            bool
+	disableMark                  bool
+	disableSweep                 bool
+	disableFinalize              bool
+	disableComponentRevisionGC   bool
+	disableLegacyGC              bool
+	disableApplicationRevisionGC bool
 
 	order v1alpha1.GarbageCollectOrder
+
+	appRevisionLimit int
 }
 
 func newGCConfig(options ...GCOption) *gcConfig {
@@ -104,6 +110,10 @@ func newGCConfig(options ...GCOption) *gcConfig {
 //
 //	For one single application, the deletion will follow Mark -> Finalize -> Sweep
 func (h *resourceKeeper) GarbageCollect(ctx context.Context, options ...GCOption) (finished bool, waiting []v1beta1.ManagedResource, err error) {
+	return h.garbageCollect(ctx, h.buildGCConfig(ctx, options...))
+}
+
+func (h *resourceKeeper) buildGCConfig(ctx context.Context, options ...GCOption) *gcConfig {
 	if h.garbageCollectPolicy != nil {
 		if h.garbageCollectPolicy.KeepLegacyResource {
 			options = append(options, PassiveGCOption{})
@@ -113,13 +123,21 @@ func (h *resourceKeeper) GarbageCollect(ctx context.Context, options ...GCOption
 			options = append(options, DependencyGCOption{})
 		default:
 		}
+		if h.garbageCollectPolicy.ContinueOnFailure && PhaseFrom(ctx) == common.ApplicationWorkflowFailed {
+			options = slices.Filter(options, func(opt GCOption) bool {
+				_, ok := opt.(DisableMarkStageGCOption)
+				return !ok
+			})
+		}
 	}
-	cfg := newGCConfig(options...)
-	return h.garbageCollect(ctx, cfg)
+	return newGCConfig(options...)
 }
 
 func (h *resourceKeeper) garbageCollect(ctx context.Context, cfg *gcConfig) (finished bool, waiting []v1beta1.ManagedResource, err error) {
-	gc := gcHandler{resourceKeeper: h, cfg: cfg}
+	gc := gcHandler{
+		resourceKeeper: h,
+		cfg:            cfg,
+	}
 	gc.Init()
 	// Mark Stage
 	if !cfg.disableMark {
@@ -151,6 +169,13 @@ func (h *resourceKeeper) garbageCollect(ctx context.Context, cfg *gcConfig) (fin
 			return false, waiting, errors.Wrapf(err, "failed to garbage collect legacy resource trackers")
 		}
 	}
+
+	if !cfg.disableApplicationRevisionGC {
+		if err = gc.GarbageCollectApplicationRevision(ctx); err != nil {
+			return false, waiting, errors.Wrapf(err, "failed to garbage collect application revision")
+		}
+	}
+
 	return finished, waiting, nil
 }
 
@@ -164,7 +189,7 @@ func (h *gcHandler) monitor(stage string) func() {
 	begin := time.Now()
 	return func() {
 		v := time.Since(begin).Seconds()
-		metrics.GCResourceTrackersDurationHistogram.WithLabelValues(stage).Observe(v)
+		metrics.AppReconcileStageDurationHistogram.WithLabelValues("gc-rt." + stage).Observe(v)
 	}
 }
 
@@ -306,7 +331,7 @@ func (h *gcHandler) deleteIndependentComponent(ctx context.Context, mr v1beta1.M
 	} else {
 		dependentClear := true
 		for _, mr := range rt.Spec.ManagedResources {
-			if utils.StringsContain(dependent, mr.Component) {
+			if slices.Contains(dependent, mr.Component) {
 				entry := h.cache.get(ctx, mr)
 				if entry.gcExecutorRT != rt {
 					continue
@@ -371,6 +396,7 @@ func DeleteManagedResourceInApplication(ctx context.Context, cli client.Client, 
 			}
 			return nil
 		}
+		util.RemoveAnnotations(obj, []string{oam.AnnotationAppSharedBy})
 	}
 	if mr.SkipGC || hasOrphanFinalizer(app) {
 		if labels := obj.GetLabels(); labels != nil {
@@ -380,7 +406,11 @@ func DeleteManagedResourceInApplication(ctx context.Context, cli client.Client, 
 		}
 		return errors.Wrapf(cli.Update(_ctx, obj), "failed to remove owner labels for resource while skipping gc")
 	}
-	if err := cli.Delete(_ctx, obj); err != nil && !kerrors.IsNotFound(err) {
+	var opts []client.DeleteOption
+	if garbageCollectPolicy, _ := policy.ParsePolicy[v1alpha1.GarbageCollectPolicySpec](app); garbageCollectPolicy != nil {
+		opts = garbageCollectPolicy.FindDeleteOption(obj)
+	}
+	if err := cli.Delete(_ctx, obj, opts...); err != nil && !kerrors.IsNotFound(err) {
 		return errors.Wrapf(err, "failed to delete resource %s", mr.ResourceKey())
 	}
 	return nil
@@ -405,7 +435,7 @@ func (h *gcHandler) checkDependentComponent(mr v1beta1.ManagedResource) []string
 	}
 	for _, comp := range h.app.Spec.Components {
 		for _, input := range comp.Inputs {
-			if utils.StringsContain(outputs, input.From) {
+			if slices.Contains(outputs, input.From) {
 				dependent = append(dependent, comp.Name)
 			}
 		}
@@ -433,7 +463,7 @@ func (h *gcHandler) GarbageCollectComponentRevisionResourceTracker(ctx context.C
 		return nil
 	}
 	inUseComponents := map[string]bool{}
-	for _, entry := range h.cache.m {
+	for _, entry := range h.cache.m.Data() {
 		for _, rt := range entry.usedBy {
 			if rt.GetDeletionTimestamp() == nil || len(rt.GetFinalizers()) != 0 {
 				inUseComponents[entry.mr.ComponentKey()] = true

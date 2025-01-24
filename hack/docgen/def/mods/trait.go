@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubevela/pkg/util/singleton"
+
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/references/docgen"
@@ -33,10 +35,10 @@ const (
 	TraitDefRefPath = "../kubevela.io/docs/end-user/traits/references.md"
 	// TraitDefRefPathZh is the target path for kubevela.io trait ref docs in Chinese
 	TraitDefRefPathZh = "../kubevela.io/i18n/zh/docusaurus-plugin-content-docs/current/end-user/traits/references.md"
-
-	// TraitDefDir store inner CUE definition
-	TraitDefDir = "./vela-templates/definitions/internal/trait/"
 )
+
+// TraitDefDirs store inner CUE definition
+var TraitDefDirs = []string{"./vela-templates/definitions/internal/trait/"}
 
 // CustomTraitHeaderEN .
 var CustomTraitHeaderEN = `---
@@ -58,8 +60,8 @@ title: 内置运维特征列表
 
 // TraitDef generate trait def reference doc
 func TraitDef(ctx context.Context, c common.Args, opt Options) {
-	if opt.DefDir == "" {
-		opt.DefDir = TraitDefDir
+	if len(opt.DefDirs) == 0 {
+		opt.DefDirs = TraitDefDirs
 	}
 	ref := &docgen.MarkdownReference{
 		AllInOne:     true,
@@ -72,23 +74,24 @@ func TraitDef(ctx context.Context, c common.Args, opt Options) {
 				return false
 			}
 			// only print capability which contained in cue def
-			files, err := os.ReadDir(opt.DefDir)
-			if err != nil {
-				fmt.Println("read dir err", opt.DefDir, err)
-				return false
-			}
-			for _, f := range files {
-				if strings.Contains(f.Name(), capability.Name) {
-					return true
+			for _, dir := range opt.DefDirs {
+				files, err := os.ReadDir(dir)
+				if err != nil {
+					fmt.Println("read dir err", opt.DefDirs, err)
+					return false
+				}
+				for _, f := range files {
+					if strings.Contains(f.Name(), capability.Name) {
+						return true
+					}
 				}
 			}
 			return false
 		},
 		CustomDocHeader: CustomTraitHeaderEN,
 	}
-	ref.Local = &docgen.FromLocal{
-		Path: TraitDefDir,
-	}
+	ref.Local = &docgen.FromLocal{Paths: TraitDefDirs}
+	ref.Client = singleton.KubeClient.Get()
 
 	if opt.Path != "" {
 		ref.I18N = &docgen.En

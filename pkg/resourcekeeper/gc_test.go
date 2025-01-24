@@ -167,8 +167,7 @@ func TestResourceKeeperGarbageCollect(t *testing.T) {
 
 	// delete rt2, trigger gc for cm3
 	dt := metav1.Now()
-	rtMaps[2].SetDeletionTimestamp(&dt)
-	r.NoError(cli.Update(ctx, rtMaps[2]))
+	r.NoError(cli.Delete(ctx, rtMaps[2]))
 	rk = createRK(4, true, "")
 	finished, _, err = rk.GarbageCollect(ctx, opts...)
 	r.NoError(err)
@@ -338,4 +337,13 @@ func TestCheckDependentComponent(t *testing.T) {
 		}
 		r.Equal(gcHandler.checkDependentComponent(mr), tc.result)
 	}
+}
+
+func TestEnableMarkStageGCOnWorkflowFailure(t *testing.T) {
+	h := &resourceKeeper{garbageCollectPolicy: &v1alpha1.GarbageCollectPolicySpec{ContinueOnFailure: true}}
+	options := []GCOption{DisableMarkStageGCOption{}}
+	cfg := h.buildGCConfig(context.Background(), options...)
+	require.True(t, cfg.disableMark)
+	cfg = h.buildGCConfig(WithPhase(context.Background(), apicommon.ApplicationWorkflowFailed), options...)
+	require.False(t, cfg.disableMark)
 }

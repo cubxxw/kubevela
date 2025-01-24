@@ -23,12 +23,13 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/magiconair/properties"
-	"github.com/pelletier/go-toml"
-	"gopkg.in/yaml.v2"
-	"k8s.io/klog/v2"
+	"cuelang.org/go/cue"
 
 	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/magiconair/properties"
+	"github.com/pelletier/go-toml"
+	"gopkg.in/yaml.v3"
+	"k8s.io/klog/v2"
 
 	icontext "github.com/oam-dev/kubevela/pkg/config/context"
 	"github.com/oam-dev/kubevela/pkg/cue/script"
@@ -51,9 +52,16 @@ type ConfigRef struct {
 }
 
 // ParseExpandedWriterConfig parse the expanded writer config from the template value
-func ParseExpandedWriterConfig(template *value.Value) ExpandedWriterConfig {
+func ParseExpandedWriterConfig(template cue.Value) ExpandedWriterConfig {
 	var ewc = ExpandedWriterConfig{}
-	parseNacosConfig(template, &ewc)
+	nacos := template.LookupPath(cue.ParsePath("nacos"))
+	if nacos.Exists() {
+		nacosConfig := &NacosConfig{}
+		if err := nacos.Decode(&nacosConfig); err != nil {
+			klog.Warningf("failed to decode the nacos config: %s", err.Error())
+		}
+		ewc.Nacos = nacosConfig
+	}
 	// parse the other writer configs
 	return ewc
 }
@@ -85,9 +93,9 @@ func Write(ctx context.Context, ewd *ExpandedWriterData, ri icontext.ReadConfigP
 }
 
 // encodingOutput support the json、toml、xml、properties and yaml formats.
-func encodingOutput(input *value.Value, format string) ([]byte, error) {
+func encodingOutput(input cue.Value, format string) ([]byte, error) {
 	var data = make(map[string]interface{})
-	if err := input.UnmarshalTo(&data); err != nil {
+	if err := value.UnmarshalTo(input, &data); err != nil {
 		return nil, err
 	}
 	switch strings.ToLower(format) {

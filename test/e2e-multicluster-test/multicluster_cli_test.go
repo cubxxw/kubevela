@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
@@ -194,7 +194,7 @@ var _ = Describe("Test kube commands", func() {
 			Expect(k8sClient.Get(workerCtx, apitypes.NamespacedName{Namespace: namespace, Name: "busybox-2"}, &v1.ConfigMap{})).Should(Succeed())
 			_, err = execCommand("kube", "delete",
 				"--cluster", types.ClusterLocalName, "--cluster", WorkerClusterName, "-n", namespace,
-				"deployment", "busybox",
+				"--group", "apps", "deployment", "busybox",
 			)
 			Expect(err).Should(Succeed())
 			Expect(apierrors.IsNotFound(k8sClient.Get(hubCtx, apitypes.NamespacedName{Namespace: namespace, Name: "busybox"}, &appsv1.Deployment{}))).Should(BeTrue())
